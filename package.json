@@ -10,7 +10,8 @@
     "check:type": "turbo run check:type",
     "check:fmt": "turbo run check:fmt",
     "fix:lint": "turbo run fix:lint",
-    "fix:fmt": "turbo run fix:fmt"
+    "fix:fmt": "turbo run fix:fmt",
+    "crawl": "pnpm --filter @kati/crawler start"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.4.1",
