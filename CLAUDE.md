@@ -9,6 +9,7 @@
 - Never run oxlint/oxfmt directly. Always use `pnpm run check` (or `pnpm run check:lint`, `pnpm run check:type`, `pnpm run check:fmt`) from the root directory.
 - To auto-fix: `pnpm run fix:fmt` (format) or `pnpm run fix:lint` (lint fixes).
 - Many pedantic lint rules are disabled in `.oxlintrc.json`. When new code triggers unfamiliar lint errors, check if the rule should be disabled globally rather than working around it in code.
+- Split commits by aspect/concern. Stage file-by-file (hunk-level staging is not available). Never bypass hooks (`--no-verify` is strictly prohibited).
 
 ## What is KATI?
 An open data platform that crawls Korean subculture event information and serves it via sorted JSONL (git) and Parquet (CI-built).
