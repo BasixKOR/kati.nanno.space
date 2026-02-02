@@ -35,6 +35,15 @@ const event = composite({
 
 export const eventCollection = collection(event, (e) => [e.id] as const);
 
+// --- 진행중 부스 ---
+
+const ongoingBoothInfoItem = composite({
+  ...event.fields,
+  ticket_bg_image_pc_info: imageInfo,
+});
+
+export const ongoingBoothInfoCollection = collection(ongoingBoothInfoItem, (b) => [b.id] as const);
+
 // --- 서클 ---
 
 const circle = composite({
