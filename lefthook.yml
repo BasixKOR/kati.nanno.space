@@ -7,8 +7,8 @@ pre-commit:
   commands:
     lint:
       glob: "*.{js,ts,jsx,tsx}"
-      run: pnpm turbo run check:lint -- {staged_files}
+      run: pnpm turbo run check:lint
       stage_fixed: true
     format-check:
       glob: "*.{js,ts,jsx,tsx,json,css,html}"
-      run: pnpm turbo run check:fmt -- {staged_files}
+      run: pnpm turbo run check:fmt
