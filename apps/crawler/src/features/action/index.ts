@@ -1,13 +1,13 @@
 export { step, parallel, lock } from "./primitives.ts";
-export { pipeline, run } from "./runner.ts";
+export { action, run } from "./runner.ts";
 export { createLockManager } from "./lock-manager.ts";
 export type {
-  PipelineEvent,
-  TaskFn,
-  RetryOptions,
+  Action,
+  ActionContext,
+  ActionEvent,
+  ActionFn,
   LockKey,
   LockManager,
-  PipelineContext,
-  Pipeline,
+  RetryOptions,
 } from "./types.ts";
-export type { PipelineResult } from "./runner.ts";
+export type { ActionResult } from "./runner.ts";
