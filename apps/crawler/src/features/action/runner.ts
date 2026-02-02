@@ -80,7 +80,13 @@ export function run<T>(def: ActionDefinition<T>, ctx?: Partial<ActionContext>): 
       }
 
       const instruction = value as ActionInstruction;
-      nextValue = await processInstruction(instruction, lockManager, activeLocks, pushEvent);
+      try {
+        nextValue = await processInstruction(instruction, lockManager, activeLocks, pushEvent);
+      } catch (error) {
+        done = true;
+        eventResolve?.();
+        throw error;
+      }
     }
   })();
 
