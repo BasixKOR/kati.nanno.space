@@ -1,10 +1,46 @@
 import type { TaskEntry, TaskEvent, TaskState, TaskStatus, WorkState } from "./app/types.ts";
+import * as v from "valibot";
 import { Box, Text, render, useInput, useStdin } from "ink";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
 
 import Spinner from "ink-spinner";
 
+interface PropertyMismatch {
+  path: string;
+  expected: string;
+  received: string;
+}
+
+function extractValibotMismatches(error: unknown): PropertyMismatch[] | undefined {
+  if (!(error instanceof v.ValiError)) return undefined;
+
+  const mismatches: PropertyMismatch[] = [];
+
+  for (const issue of error.issues) {
+    const pathParts: string[] = [];
+    if (issue.path) {
+      for (const segment of issue.path) {
+        if ("key" in segment && segment.key !== undefined) {
+          pathParts.push(String(segment.key));
+        }
+      }
+    }
+
+    const path = pathParts.length > 0 ? pathParts.join(".") : "(root)";
+    mismatches.push({
+      path,
+      expected: issue.expected ?? "unknown",
+      received: issue.received,
+    });
+  }
+
+  return mismatches.length > 0 ? mismatches : undefined;
+}
+
 function formatErrorMessage(error: unknown): string {
+  if (error instanceof v.ValiError) {
+    return `Validation failed (${error.issues.length} issue${error.issues.length === 1 ? "" : "s"})`;
+  }
   if (error instanceof Error) return error.message;
   return String(error);
 }
@@ -39,8 +75,25 @@ function StatusIcon({ status }: { status: TaskStatus }) {
   }
 }
 
+function PropertyMismatchList({ mismatches }: { mismatches: PropertyMismatch[] }) {
+  return (
+    <Box flexDirection="column" marginLeft={4}>
+      {mismatches.slice(0, 5).map((m, i) => (
+        <Text key={i} dimColor>
+          • <Text color="cyan">{m.path}</Text>: expected <Text color="green">{m.expected}</Text>,
+          got <Text color="red">{m.received}</Text>
+        </Text>
+      ))}
+      {mismatches.length > 5 ? (
+        <Text dimColor> ... and {mismatches.length - 5} more</Text>
+      ) : undefined}
+    </Box>
+  );
+}
+
 function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
   const stack = expanded && work.error ? formatErrorStack(work.error) : undefined;
+  const mismatches = work.error ? extractValibotMismatches(work.error) : undefined;
 
   return (
     <Box flexDirection="column" marginLeft={2}>
@@ -51,6 +104,7 @@ function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
           <Text color="red">{formatErrorMessage(work.error)}</Text>
         ) : undefined}
       </Box>
+      {mismatches && !expanded ? <PropertyMismatchList mismatches={mismatches} /> : undefined}
       {stack ? (
         <Box marginLeft={4}>
           <Text dimColor>{stack}</Text>
@@ -72,6 +126,7 @@ function TaskRow({
   expanded: boolean;
 }) {
   const stack = expanded && state.error ? formatErrorStack(state.error) : undefined;
+  const mismatches = state.error ? extractValibotMismatches(state.error) : undefined;
   const duration =
     state.startedAt !== undefined && state.endedAt !== undefined
       ? state.endedAt - state.startedAt
@@ -88,6 +143,11 @@ function TaskRow({
           <Text color="red">{formatErrorMessage(state.error)}</Text>
         ) : undefined}
       </Box>
+      {mismatches && !expanded ? (
+        <Box marginLeft={3}>
+          <PropertyMismatchList mismatches={mismatches} />
+        </Box>
+      ) : undefined}
       {stack ? (
         <Box marginLeft={3}>
           <Text dimColor>{stack}</Text>
