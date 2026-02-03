@@ -1,13 +1,6 @@
-import {
-  task,
-  work,
-  yieldTask,
-  useContext,
-  Ok,
-  runTask,
-  createSession,
-} from "../features/task/index.ts";
-import type { Session } from "../features/task/index.ts";
+import { Ok, spawn, task, useContext, work, yieldTask } from "../features/task/index.ts";
+import type { Infer } from "../features/model/index.ts";
+import type { Task, TaskResult } from "../features/task/index.ts";
 import {
   circleCollection,
   concertCollection,
@@ -15,8 +8,6 @@ import {
   ongoingBoothInfoCollection,
   scheduleCollection,
 } from "./models/illustar.ts";
-import type { TaskEntry } from "./types.ts";
-import type { Infer } from "../features/model/index.ts";
 import { endpoints } from "../services/illustar/index.ts";
 import { persist } from "./persist.ts";
 
@@ -123,84 +114,55 @@ const crawlSchedule = () =>
     return Ok(toMap(scheduleList, (s) => [s.id] as const) as Infer<typeof scheduleCollection>);
   });
 
-export interface IllustarCrawlResult {
-  readonly session: Session;
-  readonly entries: TaskEntry[];
-  persist(dataDir: string): Promise<void>;
+export interface IllustarCrawlData {
+  events: Infer<typeof eventCollection>;
+  circles: Infer<typeof circleCollection>;
+  concerts: Infer<typeof concertCollection>;
+  schedule: Infer<typeof scheduleCollection>;
+  ongoingBoothInfo: Infer<typeof ongoingBoothInfoCollection>;
 }
 
-// eslint-disable-next-line import/no-default-export
-export default function crawlIllustar(
-  context: import("../features/task/index.ts").TaskContext,
-): IllustarCrawlResult {
-  const session = createSession(context);
+export function crawlIllustar(): Task<IllustarCrawlData> {
+  return task("crawl-illustar", function* () {
+    const results = yield* spawn([
+      crawlEvents(),
+      crawlCircles(),
+      crawlConcerts(),
+      crawlSchedule(),
+      crawlOngoingBoothInfo(),
+    ]);
 
-  const eventsResult = runTask(crawlEvents(), session);
-  const circlesResult = runTask(crawlCircles(), session);
-  const concertsResult = runTask(crawlConcerts(), session);
-  const scheduleResult = runTask(crawlSchedule(), session);
-  const ongoingBoothInfoResult = runTask(crawlOngoingBoothInfo(), session);
+    const [eventsResult, circlesResult, concertsResult, scheduleResult, ongoingBoothInfoResult] =
+      results as [
+        TaskResult<Infer<typeof eventCollection>>,
+        TaskResult<Infer<typeof circleCollection>>,
+        TaskResult<Infer<typeof concertCollection>>,
+        TaskResult<Infer<typeof scheduleCollection>>,
+        TaskResult<Infer<typeof ongoingBoothInfoCollection>>,
+      ];
 
-  const allResults = Promise.allSettled([
-    eventsResult.result,
-    circlesResult.result,
-    concertsResult.result,
-    scheduleResult.result,
-    ongoingBoothInfoResult.result,
+    if (!eventsResult.ok) throw eventsResult.error;
+    if (!circlesResult.ok) throw circlesResult.error;
+    if (!concertsResult.ok) throw concertsResult.error;
+    if (!scheduleResult.ok) throw scheduleResult.error;
+    if (!ongoingBoothInfoResult.ok) throw ongoingBoothInfoResult.error;
+
+    return Ok({
+      events: eventsResult.data,
+      circles: circlesResult.data,
+      concerts: concertsResult.data,
+      schedule: scheduleResult.data,
+      ongoingBoothInfo: ongoingBoothInfoResult.data,
+    });
+  });
+}
+
+export async function persistIllustar(data: IllustarCrawlData, dataDir: string): Promise<void> {
+  await Promise.all([
+    persist(eventCollection, data.events, "events", dataDir),
+    persist(circleCollection, data.circles, "circles", dataDir),
+    persist(concertCollection, data.concerts, "concerts", dataDir),
+    persist(scheduleCollection, data.schedule, "schedule", dataDir),
+    persist(ongoingBoothInfoCollection, data.ongoingBoothInfo, "ongoing-booth-info", dataDir),
   ]);
-
-  return {
-    session,
-    entries: [
-      { name: "crawl-illustar-events", result: eventsResult },
-      { name: "crawl-illustar-circles", result: circlesResult },
-      { name: "crawl-illustar-concerts", result: concertsResult },
-      { name: "crawl-illustar-schedule", result: scheduleResult },
-      { name: "crawl-illustar-ongoing-booth-info", result: ongoingBoothInfoResult },
-    ],
-    async persist(dataDir: string) {
-      const [events, circles, concerts, schedule, ongoingBooth] = await allResults;
-
-      if (events.status === "fulfilled" && events.value.ok) {
-        await persist(
-          eventCollection,
-          events.value.data as Infer<typeof eventCollection>,
-          "events",
-          dataDir,
-        );
-      }
-      if (circles.status === "fulfilled" && circles.value.ok) {
-        await persist(
-          circleCollection,
-          circles.value.data as Infer<typeof circleCollection>,
-          "circles",
-          dataDir,
-        );
-      }
-      if (concerts.status === "fulfilled" && concerts.value.ok) {
-        await persist(
-          concertCollection,
-          concerts.value.data as Infer<typeof concertCollection>,
-          "concerts",
-          dataDir,
-        );
-      }
-      if (schedule.status === "fulfilled" && schedule.value.ok) {
-        await persist(
-          scheduleCollection,
-          schedule.value.data as Infer<typeof scheduleCollection>,
-          "schedule",
-          dataDir,
-        );
-      }
-      if (ongoingBooth.status === "fulfilled" && ongoingBooth.value.ok) {
-        await persist(
-          ongoingBoothInfoCollection,
-          ongoingBooth.value.data as Infer<typeof ongoingBoothInfoCollection>,
-          "ongoing-booth-info",
-          dataDir,
-        );
-      }
-    },
-  };
 }
