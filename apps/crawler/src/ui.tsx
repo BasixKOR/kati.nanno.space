@@ -52,26 +52,38 @@ function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
   );
 }
 
-function TaskRow({ name, state, expanded }: { name: string; state: TaskState; expanded: boolean }) {
+function TaskRow({
+  name,
+  state,
+  focused,
+  expanded,
+}: {
+  name: string;
+  state: TaskState;
+  focused: boolean;
+  expanded: boolean;
+}) {
   const stack = expanded && state.error ? formatErrorStack(state.error) : undefined;
 
   return (
     <Box flexDirection="column">
       <Box gap={1}>
+        <Text>{focused ? "▸" : " "}</Text>
         <StatusIcon status={state.status} />
-        <Text>{name}</Text>
+        <Text bold={focused}>{name}</Text>
         {state.status === "error" && state.error ? (
           <Text color="red">{formatErrorMessage(state.error)}</Text>
         ) : undefined}
       </Box>
       {stack ? (
-        <Box marginLeft={2}>
+        <Box marginLeft={3}>
           <Text dimColor>{stack}</Text>
         </Box>
       ) : undefined}
-      {state.works.map((work, i) => (
-        <WorkRow key={`${work.name}-${i}`} work={work} expanded={expanded} />
-      ))}
+      {expanded &&
+        state.works.map((work, i) => (
+          <WorkRow key={`${work.name}-${i}`} work={work} expanded={expanded} />
+        ))}
     </Box>
   );
 }
@@ -178,22 +190,34 @@ function App({ entries, onExit }: { entries: readonly TaskEntry[]; onExit: () =>
     return map;
   });
 
-  const [expandedErrors, setExpandedErrors] = useState(false);
+  const [focusedIndex, setFocusedIndex] = useState(0);
+  // Expanded index: -1 means none expanded, otherwise the index of expanded task
+  const [expandedIndex, setExpandedIndex] = useState(-1);
 
   const allDone = [...states.values()].every((s) => s.status === "done" || s.status === "error");
   const hasErrors = [...states.values()].some((s) => s.status === "error");
 
   useInput(
     useCallback(
-      (input: string, key: { escape: boolean }) => {
-        if (input === "e") {
-          setExpandedErrors((prev) => !prev);
+      (
+        input: string,
+        key: { escape: boolean; upArrow: boolean; downArrow: boolean; return: boolean },
+      ) => {
+        if (key.upArrow) {
+          setFocusedIndex((prev) => Math.max(0, prev - 1));
+        }
+        if (key.downArrow) {
+          setFocusedIndex((prev) => Math.min(entries.length - 1, prev + 1));
+        }
+        if (input === "e" || key.return) {
+          // Toggle expand: if already expanded, collapse; otherwise expand focused
+          setExpandedIndex((prev) => (prev === focusedIndex ? -1 : focusedIndex));
         }
         if (input === "q" || key.escape) {
           onExit();
         }
       },
-      [onExit],
+      [onExit, focusedIndex, entries.length],
     ),
     { isActive: isRawModeSupported },
   );
@@ -222,18 +246,19 @@ function App({ entries, onExit }: { entries: readonly TaskEntry[]; onExit: () =>
 
   return (
     <Box flexDirection="column">
-      {entries.map((entry) => (
+      {entries.map((entry, index) => (
         <TaskRow
           key={entry.name}
           name={entry.name}
           state={states.get(entry.name) ?? { status: "pending", works: [], children: [] }}
-          expanded={expandedErrors}
+          focused={index === focusedIndex}
+          expanded={index === expandedIndex}
         />
       ))}
       {hasErrors && allDone && isRawModeSupported ? (
         <Text dimColor>
-          Press <Text bold>e</Text> to {expandedErrors ? "collapse" : "expand"} stack traces,{" "}
-          <Text bold>q</Text> to quit
+          <Text bold>↑↓</Text> navigate, <Text bold>Enter/e</Text> expand/collapse,{" "}
+          <Text bold>q</Text> quit
         </Text>
       ) : undefined}
     </Box>
