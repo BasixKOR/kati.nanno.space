@@ -1,10 +1,4 @@
-import type {
-  ActionEntry,
-  ActionEvent,
-  ActionState,
-  ActionStatus,
-  StepState,
-} from "./app/types.ts";
+import type { TaskEntry, TaskEvent, TaskState, TaskStatus, WorkState } from "./app/types.ts";
 import { Box, Text, render, useInput, useStdin } from "ink";
 import React, { useCallback, useEffect, useState } from "react";
 
@@ -20,7 +14,7 @@ function formatErrorStack(error: unknown): string | undefined {
   return undefined;
 }
 
-function StatusIcon({ status }: { status: ActionStatus }) {
+function StatusIcon({ status }: { status: TaskStatus }) {
   switch (status) {
     case "pending": {
       return <Text dimColor>○</Text>;
@@ -37,16 +31,16 @@ function StatusIcon({ status }: { status: ActionStatus }) {
   }
 }
 
-function StepRow({ step, expanded }: { step: StepState; expanded: boolean }) {
-  const stack = expanded && step.error ? formatErrorStack(step.error) : undefined;
+function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
+  const stack = expanded && work.error ? formatErrorStack(work.error) : undefined;
 
   return (
     <Box flexDirection="column" marginLeft={2}>
       <Box gap={1}>
-        <StatusIcon status={step.status} />
-        <Text dimColor>{step.name}</Text>
-        {step.status === "error" && step.error ? (
-          <Text color="red">{formatErrorMessage(step.error)}</Text>
+        <StatusIcon status={work.status} />
+        <Text dimColor>{work.description ?? work.name}</Text>
+        {work.status === "error" && work.error ? (
+          <Text color="red">{formatErrorMessage(work.error)}</Text>
         ) : undefined}
       </Box>
       {stack ? (
@@ -58,15 +52,7 @@ function StepRow({ step, expanded }: { step: StepState; expanded: boolean }) {
   );
 }
 
-function ActionRow({
-  name,
-  state,
-  expanded,
-}: {
-  name: string;
-  state: ActionState;
-  expanded: boolean;
-}) {
+function TaskRow({ name, state, expanded }: { name: string; state: TaskState; expanded: boolean }) {
   return (
     <Box flexDirection="column">
       <Box gap={1}>
@@ -76,8 +62,8 @@ function ActionRow({
           <Text color="red">{formatErrorMessage(state.error)}</Text>
         ) : undefined}
       </Box>
-      {state.steps.map((step) => (
-        <StepRow key={step.name} step={step} expanded={expanded} />
+      {state.works.map((work, i) => (
+        <WorkRow key={`${work.name}-${i}`} work={work} expanded={expanded} />
       ))}
     </Box>
   );
@@ -85,38 +71,86 @@ function ActionRow({
 
 function consumeEvents(
   name: string,
-  events: AsyncIterable<ActionEvent>,
-  update: (name: string, fn: (prev: ActionState) => ActionState) => void,
+  events: AsyncIterable<TaskEvent>,
+  update: (name: string, fn: (prev: TaskState) => TaskState) => void,
 ): void {
   (async () => {
     for await (const event of events) {
       switch (event.kind) {
-        case "action:start": {
-          update(name, (prev) => ({
-            ...prev,
-            status: "running",
-            steps: [...prev.steps, { name: event.name, status: "running" }],
-          }));
+        case "taskStart": {
+          // Only update if this is our task
+          if (event.name === name) {
+            update(name, (prev) => ({
+              ...prev,
+              status: "running",
+            }));
+          }
           break;
         }
-        case "action:done": {
-          update(name, (prev) => ({
-            ...prev,
-            steps: prev.steps.map((s) =>
-              s.name === event.name ? { ...s, status: "done" as const } : s,
-            ),
-          }));
+        case "taskEnd": {
+          // Only update if this is our task
+          if (event.name === name) {
+            update(name, (prev) => ({
+              ...prev,
+              status: event.result.ok ? "done" : "error",
+              error: event.result.ok ? undefined : event.result.error,
+            }));
+          }
           break;
         }
-        case "action:error": {
-          update(name, (prev) => ({
-            ...prev,
-            status: "error",
-            error: event.error,
-            steps: prev.steps.map((s) =>
-              s.name === event.name ? { ...s, status: "error" as const, error: event.error } : s,
-            ),
-          }));
+        case "workStart": {
+          // Only handle work events for this task
+          if (event.task === name) {
+            update(name, (prev) => {
+              const newWork: WorkState = {
+                name: event.task,
+                status: "running" as const,
+              };
+              if (event.description !== undefined) {
+                newWork.description = event.description;
+              }
+              return {
+                ...prev,
+                status: "running",
+                works: [...prev.works, newWork],
+              };
+            });
+          }
+          break;
+        }
+        case "workProgress": {
+          if (event.task === name) {
+            update(name, (prev) => ({
+              ...prev,
+              works: prev.works.map((w, i) =>
+                i === prev.works.length - 1 ? { ...w, progress: event.value } : w,
+              ),
+            }));
+          }
+          break;
+        }
+        case "workEnd": {
+          if (event.task === name) {
+            update(name, (prev) => ({
+              ...prev,
+              works: prev.works.map((w, i) =>
+                i === prev.works.length - 1 ? { ...w, status: "done" as const } : w,
+              ),
+            }));
+          }
+          break;
+        }
+        case "spawnStart": {
+          if (event.parent === name) {
+            update(name, (prev) => ({
+              ...prev,
+              children: event.children as string[],
+            }));
+          }
+          break;
+        }
+        case "spawnEnd": {
+          // Spawn end is informational; children handle their own state
           break;
         }
       }
@@ -126,13 +160,13 @@ function consumeEvents(
   })();
 }
 
-function App({ entries, onExit }: { entries: readonly ActionEntry[]; onExit: () => void }) {
+function App({ entries, onExit }: { entries: readonly TaskEntry[]; onExit: () => void }) {
   const { isRawModeSupported } = useStdin();
 
-  const [states, setStates] = useState<Map<string, ActionState>>(() => {
-    const map = new Map<string, ActionState>();
+  const [states, setStates] = useState<Map<string, TaskState>>(() => {
+    const map = new Map<string, TaskState>();
     for (const entry of entries) {
-      map.set(entry.name, { status: "pending", steps: [] });
+      map.set(entry.name, { status: "pending", works: [], children: [] });
     }
     return map;
   });
@@ -182,10 +216,10 @@ function App({ entries, onExit }: { entries: readonly ActionEntry[]; onExit: () 
   return (
     <Box flexDirection="column">
       {entries.map((entry) => (
-        <ActionRow
+        <TaskRow
           key={entry.name}
           name={entry.name}
-          state={states.get(entry.name) ?? { status: "pending", steps: [] }}
+          state={states.get(entry.name) ?? { status: "pending", works: [], children: [] }}
           expanded={expandedErrors}
         />
       ))}
@@ -199,7 +233,7 @@ function App({ entries, onExit }: { entries: readonly ActionEntry[]; onExit: () 
   );
 }
 
-export function renderActions(entries: readonly ActionEntry[]): Promise<boolean> {
+export function renderTasks(entries: readonly TaskEntry[]): Promise<boolean> {
   return new Promise((resolve) => {
     let resolved = false;
     const { unmount } = render(

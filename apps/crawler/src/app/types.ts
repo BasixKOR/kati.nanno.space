@@ -1,22 +1,25 @@
-import type { ActionResult } from "../features/action/index.ts";
+import type { RunResult } from "../features/task/index.ts";
 
-export type { ActionEvent } from "../features/action/index.ts";
+export type { TaskEvent } from "../features/task/index.ts";
 
-export interface ActionEntry {
+export interface TaskEntry {
   readonly name: string;
-  readonly result: ActionResult<unknown>;
+  readonly result: RunResult<unknown>;
 }
 
-export type ActionStatus = "pending" | "running" | "done" | "error";
+export type TaskStatus = "pending" | "running" | "done" | "error";
 
-export interface StepState {
+export interface WorkState {
   name: string;
-  status: ActionStatus;
+  status: TaskStatus;
+  description?: string;
+  progress?: "indefinite" | number;
   error?: unknown;
 }
 
-export interface ActionState {
-  status: ActionStatus;
-  steps: StepState[];
+export interface TaskState {
+  status: TaskStatus;
+  works: WorkState[];
+  children: string[];
   error?: unknown;
 }

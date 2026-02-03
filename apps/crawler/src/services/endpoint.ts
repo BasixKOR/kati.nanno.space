@@ -49,8 +49,8 @@ async function readBodyWithProgress(
   return Buffer.concat(chunks);
 }
 
-declare module "../features/action/types.ts" {
-  interface ActionContext {
+declare module "../features/task/types.ts" {
+  interface TaskContext {
     readonly fetcher: Fetcher;
   }
 }

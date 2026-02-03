@@ -1,5 +1,13 @@
-import { action, run, step, useContext } from "../features/action/index.ts";
-import type { ActionContext } from "../features/action/index.ts";
+import {
+  task,
+  work,
+  yieldTask,
+  useContext,
+  Ok,
+  runTask,
+  createSession,
+} from "../features/task/index.ts";
+import type { Session } from "../features/task/index.ts";
 import {
   circleCollection,
   concertCollection,
@@ -7,7 +15,7 @@ import {
   ongoingBoothInfoCollection,
   scheduleCollection,
 } from "./models/illustar.ts";
-import type { ActionEntry } from "./types.ts";
+import type { TaskEntry } from "./types.ts";
 import type { Infer } from "../features/model/index.ts";
 import { endpoints } from "../services/illustar/index.ts";
 import { persist } from "./persist.ts";
@@ -23,19 +31,21 @@ function toMap<T, K extends readonly [string | number, ...(string | number)[]]>(
   return map;
 }
 
-const crawlEvents = action("crawl-illustar-events", function* crawlEvents() {
-  const { fetcher } = yield* useContext();
-  const { eventInfo } = yield* step(() => fetcher.fetch(endpoints.eventList), {
-    name: "fetch-event-list",
+const crawlEvents = () =>
+  task("crawl-illustar-events", function* () {
+    const { fetcher } = yield* useContext();
+    const { eventInfo } = yield* work(async ($) => {
+      $.description("Fetching event list");
+      return await fetcher.fetch(endpoints.eventList);
+    });
+
+    return Ok(toMap(eventInfo, (e) => [e.id] as const) as Infer<typeof eventCollection>);
   });
 
-  return toMap(eventInfo, (e) => [e.id] as const) as Infer<typeof eventCollection>;
-});
-
-function crawlCirclesFor(eventsResult: Promise<Infer<typeof eventCollection>>) {
-  return action("crawl-illustar-circles", function* crawlCircles() {
+const crawlCircles = () =>
+  task("crawl-illustar-circles", function* () {
     const { fetcher } = yield* useContext();
-    const events = yield* step(() => eventsResult, { name: "await-events" });
+    const events = yield* yieldTask(crawlEvents());
 
     const allCircles: Infer<typeof circleCollection> = new Map();
 
@@ -44,13 +54,12 @@ function crawlCirclesFor(eventsResult: Promise<Infer<typeof eventCollection>>) {
       const rowPerPage = 100;
 
       while (true) {
-        const response = yield* step(
-          () =>
-            fetcher.fetch(endpoints.circleList, {
-              query: { event_id: event.id, page, row_per_page: rowPerPage },
-            }),
-          { name: `fetch-circles-event-${event.id}-page-${page}` },
-        );
+        const response = yield* work(async ($) => {
+          $.description(`Fetching circles for event ${event.id}, page ${page}`);
+          return await fetcher.fetch(endpoints.circleList, {
+            query: { event_id: event.id, page, row_per_page: rowPerPage },
+          });
+        });
 
         for (const circle of response.list) {
           const key = [circle.id] as const;
@@ -62,72 +71,77 @@ function crawlCirclesFor(eventsResult: Promise<Infer<typeof eventCollection>>) {
       }
     }
 
-    return allCircles;
+    return Ok(allCircles);
   });
-}
 
-const crawlConcerts = action("crawl-illustar-concerts", function* crawlConcerts() {
-  const { fetcher } = yield* useContext();
-  const allConcerts: Infer<typeof concertCollection> = new Map();
-  let page = 1;
-  const rowPerPage = 100;
+const crawlConcerts = () =>
+  task("crawl-illustar-concerts", function* () {
+    const { fetcher } = yield* useContext();
+    const allConcerts: Infer<typeof concertCollection> = new Map();
+    let page = 1;
+    const rowPerPage = 100;
 
-  while (true) {
-    const response = yield* step(
-      () =>
-        fetcher.fetch(endpoints.concertList, {
+    while (true) {
+      const response = yield* work(async ($) => {
+        $.description(`Fetching concerts, page ${page}`);
+        return await fetcher.fetch(endpoints.concertList, {
           query: { page, row_per_page: rowPerPage },
-        }),
-      { name: `fetch-concerts-page-${page}` },
-    );
+        });
+      });
 
-    for (const concert of response.list) {
-      const key = [concert.id] as const;
-      allConcerts.set(key.join("\0"), concert);
+      for (const concert of response.list) {
+        const key = [concert.id] as const;
+        allConcerts.set(key.join("\0"), concert);
+      }
+
+      if (page >= response.pageInfo.max_page) break;
+      page += 1;
     }
 
-    if (page >= response.pageInfo.max_page) break;
-    page += 1;
-  }
-
-  return allConcerts;
-});
-
-const crawlSchedule = action("crawl-illustar-schedule", function* crawlSchedule() {
-  const { fetcher } = yield* useContext();
-  const { scheduleList } = yield* step(() => fetcher.fetch(endpoints.schedule), {
-    name: "fetch-schedule",
+    return Ok(allConcerts);
   });
 
-  return toMap(scheduleList, (s) => [s.id] as const) as Infer<typeof scheduleCollection>;
-});
-
-const crawlOngoingBoothInfo = action(
-  "crawl-illustar-ongoing-booth-info",
-  function* crawlOngoingBoothInfo() {
+const crawlSchedule = () =>
+  task("crawl-illustar-schedule", function* () {
     const { fetcher } = yield* useContext();
-    const { boothInfo } = yield* step(() => fetcher.fetch(endpoints.ongoingBoothInfo), {
-      name: "fetch-ongoing-booth-info",
+    const { scheduleList } = yield* work(async ($) => {
+      $.description("Fetching schedule");
+      return await fetcher.fetch(endpoints.schedule);
     });
 
-    return toMap(boothInfo, (b) => [b.id] as const) as Infer<typeof ongoingBoothInfoCollection>;
-  },
-);
+    return Ok(toMap(scheduleList, (s) => [s.id] as const) as Infer<typeof scheduleCollection>);
+  });
+
+const crawlOngoingBoothInfo = () =>
+  task("crawl-illustar-ongoing-booth-info", function* () {
+    const { fetcher } = yield* useContext();
+    const { boothInfo } = yield* work(async ($) => {
+      $.description("Fetching ongoing booth info");
+      return await fetcher.fetch(endpoints.ongoingBoothInfo);
+    });
+
+    return Ok(toMap(boothInfo, (b) => [b.id] as const) as Infer<typeof ongoingBoothInfoCollection>);
+  });
 
 export interface IllustarCrawlResult {
-  readonly entries: ActionEntry[];
+  readonly session: Session;
+  readonly entries: TaskEntry[];
   persist(dataDir: string): Promise<void>;
 }
 
 // eslint-disable-next-line import/no-default-export
-export default function crawlIllustar(ctx: Partial<ActionContext>): IllustarCrawlResult {
-  const eventsResult = run(crawlEvents, ctx);
-  const circlesResult = run(crawlCirclesFor(eventsResult.result), ctx);
-  const concertsResult = run(crawlConcerts, ctx);
-  const scheduleResult = run(crawlSchedule, ctx);
-  const ongoingBoothInfoResult = run(crawlOngoingBoothInfo, ctx);
+export default function crawlIllustar(
+  context: import("../features/task/index.ts").TaskContext,
+): IllustarCrawlResult {
+  const session = createSession(context);
 
-  const settled = Promise.allSettled([
+  const eventsResult = runTask(crawlEvents(), session);
+  const circlesResult = runTask(crawlCircles(), session);
+  const concertsResult = runTask(crawlConcerts(), session);
+  const scheduleResult = runTask(crawlSchedule(), session);
+  const ongoingBoothInfoResult = runTask(crawlOngoingBoothInfo(), session);
+
+  const allResults = Promise.allSettled([
     eventsResult.result,
     circlesResult.result,
     concertsResult.result,
@@ -136,6 +150,7 @@ export default function crawlIllustar(ctx: Partial<ActionContext>): IllustarCraw
   ]);
 
   return {
+    session,
     entries: [
       { name: "crawl-illustar-events", result: eventsResult },
       { name: "crawl-illustar-circles", result: circlesResult },
@@ -144,24 +159,44 @@ export default function crawlIllustar(ctx: Partial<ActionContext>): IllustarCraw
       { name: "crawl-illustar-ongoing-booth-info", result: ongoingBoothInfoResult },
     ],
     async persist(dataDir: string) {
-      const [events, circles, concerts, schedule, ongoingBooth] = await settled;
+      const [events, circles, concerts, schedule, ongoingBooth] = await allResults;
 
-      if (events.status === "fulfilled") {
-        await persist(eventCollection, events.value, "events", dataDir);
+      if (events.status === "fulfilled" && events.value.ok) {
+        await persist(
+          eventCollection,
+          events.value.data as Infer<typeof eventCollection>,
+          "events",
+          dataDir,
+        );
       }
-      if (circles.status === "fulfilled") {
-        await persist(circleCollection, circles.value, "circles", dataDir);
+      if (circles.status === "fulfilled" && circles.value.ok) {
+        await persist(
+          circleCollection,
+          circles.value.data as Infer<typeof circleCollection>,
+          "circles",
+          dataDir,
+        );
       }
-      if (concerts.status === "fulfilled") {
-        await persist(concertCollection, concerts.value, "concerts", dataDir);
+      if (concerts.status === "fulfilled" && concerts.value.ok) {
+        await persist(
+          concertCollection,
+          concerts.value.data as Infer<typeof concertCollection>,
+          "concerts",
+          dataDir,
+        );
       }
-      if (schedule.status === "fulfilled") {
-        await persist(scheduleCollection, schedule.value, "schedule", dataDir);
+      if (schedule.status === "fulfilled" && schedule.value.ok) {
+        await persist(
+          scheduleCollection,
+          schedule.value.data as Infer<typeof scheduleCollection>,
+          "schedule",
+          dataDir,
+        );
       }
-      if (ongoingBooth.status === "fulfilled") {
+      if (ongoingBooth.status === "fulfilled" && ongoingBooth.value.ok) {
         await persist(
           ongoingBoothInfoCollection,
-          ongoingBooth.value,
+          ongoingBooth.value.data as Infer<typeof ongoingBoothInfoCollection>,
           "ongoing-booth-info",
           dataDir,
         );
