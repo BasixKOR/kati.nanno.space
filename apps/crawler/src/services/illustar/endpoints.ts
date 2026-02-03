@@ -218,7 +218,7 @@ const CircleListItem = v.object({
   /** 장르 유형 */
   genre_type: v.string(),
   /** 대표 이미지 상세 */
-  image_info: ImageInfo,
+  image_info: v.nullable(ImageInfo),
 });
 
 const CircleListSchema = v.object({

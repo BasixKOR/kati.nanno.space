@@ -1,5 +1,5 @@
 import { BoothStatus, BoothType, DateType, GoodsType } from "../../services/illustar/index.ts";
-import { collection, composite, scalar } from "../../features/model/index.ts";
+import { collection, composite, nullable, scalar } from "../../features/model/index.ts";
 
 // --- 공용 ---
 
@@ -68,7 +68,7 @@ const circle = composite({
   user_nickname: scalar.string(),
   goods_type: scalar.simpleSet(scalar.enum(GoodsType)),
   genre_type: scalar.string(),
-  image_info: imageInfo,
+  image_info: nullable(imageInfo),
 });
 
 export const circleCollection = collection(circle, (c) => [c.id] as const);
