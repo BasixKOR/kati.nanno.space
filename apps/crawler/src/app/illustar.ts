@@ -42,14 +42,25 @@ const crawlEvents = () =>
     return Ok(toMap(eventInfo, (e) => [e.id] as const) as Infer<typeof eventCollection>);
   });
 
+const crawlOngoingBoothInfo = () =>
+  task("crawl-illustar-ongoing-booth-info", function* () {
+    const { fetcher } = yield* useContext();
+    const { boothInfo } = yield* work(async ($) => {
+      $.description("Fetching ongoing booth info");
+      return await fetcher.fetch(endpoints.ongoingBoothInfo);
+    });
+
+    return Ok(toMap(boothInfo, (b) => [b.id] as const) as Infer<typeof ongoingBoothInfoCollection>);
+  });
+
 const crawlCircles = () =>
   task("crawl-illustar-circles", function* () {
     const { fetcher } = yield* useContext();
-    const events = yield* yieldTask(crawlEvents());
+    const ongoingEvents = yield* yieldTask(crawlOngoingBoothInfo());
 
     const allCircles: Infer<typeof circleCollection> = new Map();
 
-    for (const event of events.values()) {
+    for (const event of ongoingEvents.values()) {
       let page = 1;
       const rowPerPage = 100;
 
@@ -110,17 +121,6 @@ const crawlSchedule = () =>
     });
 
     return Ok(toMap(scheduleList, (s) => [s.id] as const) as Infer<typeof scheduleCollection>);
-  });
-
-const crawlOngoingBoothInfo = () =>
-  task("crawl-illustar-ongoing-booth-info", function* () {
-    const { fetcher } = yield* useContext();
-    const { boothInfo } = yield* work(async ($) => {
-      $.description("Fetching ongoing booth info");
-      return await fetcher.fetch(endpoints.ongoingBoothInfo);
-    });
-
-    return Ok(toMap(boothInfo, (b) => [b.id] as const) as Infer<typeof ongoingBoothInfoCollection>);
   });
 
 export interface IllustarCrawlResult {
