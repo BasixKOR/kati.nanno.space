@@ -52,5 +52,13 @@
     "capitalized-comments": "off",
     "promise/prefer-await-to-then": "off"
   },
-  "ignorePatterns": ["dist/**"]
+  "ignorePatterns": ["dist/**"],
+  "overrides": [
+    {
+      "files": ["**/endpoints/**/ongoingBoothInfo.ts"],
+      "rules": {
+        "unicorn/filename-case": "off"
+      }
+    }
+  ]
 }
