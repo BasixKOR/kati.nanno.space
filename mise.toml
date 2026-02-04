@@ -1,3 +1,4 @@
 [tools]
+duckdb = "latest"
 node = "24.12.0"
 pnpm = "10.26.0"

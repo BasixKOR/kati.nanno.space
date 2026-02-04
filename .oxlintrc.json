@@ -52,12 +52,24 @@
     "capitalized-comments": "off",
     "promise/prefer-await-to-then": "off"
   },
-  "ignorePatterns": ["dist/**"],
+  "ignorePatterns": ["dist/**", "build/**", ".react-router/**"],
   "overrides": [
     {
       "files": ["**/endpoints/**/ongoingBoothInfo.ts"],
       "rules": {
         "unicorn/filename-case": "off"
+      }
+    },
+    {
+      "files": [
+        "vite.config.ts",
+        "react-router.config.ts",
+        "**/app/root.tsx",
+        "**/app/routes.ts",
+        "**/app/routes/**/*.tsx"
+      ],
+      "rules": {
+        "import/no-default-export": "off"
       }
     }
   ]

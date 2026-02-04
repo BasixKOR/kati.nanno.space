@@ -11,7 +11,8 @@
     "check:fmt": "turbo run check:fmt",
     "fix:lint": "turbo run fix:lint",
     "fix:fmt": "turbo run fix:fmt",
-    "crawl": "pnpm --filter @kati/crawler start"
+    "crawl": "pnpm --filter @kati/crawler start",
+    "website": "pnpm --filter @kati/website dev"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.4.1",
