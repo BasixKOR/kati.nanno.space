@@ -1,4 +1,4 @@
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { DataTable, DuckDbConnector } from "@sqlrooms/duckdb";
 import { QueryDataTable } from "@sqlrooms/data-table";
 import { SqlMonacoEditor } from "@sqlrooms/sql-editor";
@@ -18,6 +18,28 @@ type QueryCell = {
   executedQuery: string;
   resultHeight: number;
 };
+
+const CELLS_STORAGE_KEY = "kati-sql-cells";
+
+function loadCellsFromStorage(): QueryCell[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const saved = localStorage.getItem(CELLS_STORAGE_KEY);
+    if (saved) {
+      const parsed = JSON.parse(saved);
+      if (Array.isArray(parsed) && parsed.length > 0) {
+        return parsed;
+      }
+    }
+  } catch {
+    // Ignore parse errors
+  }
+  return null;
+}
+
+function saveCellsToStorage(cells: QueryCell[]) {
+  localStorage.setItem(CELLS_STORAGE_KEY, JSON.stringify(cells));
+}
 
 function ResizeHandle({
   onResizeStart,
@@ -100,9 +122,7 @@ function QueryCellComponent({
     <div id={`cell-${cell.id}`} className="m-3 overflow-hidden rounded-lg border shadow-sm">
       {/* Editor Header */}
       <div className="flex items-center justify-between border-b bg-muted/30 px-3 py-1.5">
-        <span className="text-xs font-medium text-muted-foreground">Query {index + 1}</span>
         <div className="flex items-center gap-2">
-          <span className="text-xs text-muted-foreground">⌘+Enter</span>
           <button
             type="button"
             onClick={handleRun}
@@ -111,16 +131,18 @@ function QueryCellComponent({
             <PlayIcon className="h-3 w-3" />
             Run
           </button>
-          {canRemove && (
-            <button
-              type="button"
-              onClick={() => onRemove(cell.id)}
-              className="flex items-center rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
-            >
-              <XIcon className="h-3.5 w-3.5" />
-            </button>
-          )}
+          <span className="text-xs font-medium text-muted-foreground">Query {index + 1}</span>
+          <span className="text-xs text-muted-foreground">⌘+Enter</span>
         </div>
+        {canRemove && (
+          <button
+            type="button"
+            onClick={() => onRemove(cell.id)}
+            className="flex items-center rounded p-1 text-muted-foreground transition-colors hover:bg-destructive/10 hover:text-destructive"
+          >
+            <XIcon className="h-3.5 w-3.5" />
+          </button>
+        )}
       </div>
 
       {/* Editor */}
@@ -144,8 +166,8 @@ function QueryCellComponent({
         />
       </div>
 
-      {/* Results */}
-      {cell.executedQuery && (
+      {/* Results - only render when tables are loaded */}
+      {cell.executedQuery && tables.length > 0 && (
         <>
           <div className="border-t" style={{ height: cell.resultHeight }}>
             <QueryDataTable className="h-full" fontSize="text-xs" query={cell.executedQuery} />
@@ -201,9 +223,15 @@ export function MainView() {
   const [firstTable] = tables;
   const defaultQuery = firstTable ? `SELECT * FROM ${firstTable.table.table} LIMIT 100` : "";
 
-  const [cells, setCells] = useState<QueryCell[]>([
-    { id: "1", query: defaultQuery, executedQuery: "", resultHeight: 200 },
-  ]);
+  const [cells, setCells] = useState<QueryCell[]>(() => {
+    const saved = loadCellsFromStorage();
+    if (saved) return saved;
+    return [{ id: "1", query: defaultQuery, executedQuery: "", resultHeight: 200 }];
+  });
+
+  useEffect(() => {
+    saveCellsToStorage(cells);
+  }, [cells]);
 
   const addCell = () => {
     setCells((prev) => [
