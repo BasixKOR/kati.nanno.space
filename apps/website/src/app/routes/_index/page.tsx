@@ -3,28 +3,31 @@ import type { Route } from "./+types/page";
 
 export function meta(_args: Route.MetaArgs) {
   return [
-    { title: "KATI - SQL Shell" },
+    { title: "KATI - SQL Workbench" },
     { name: "description", content: "Query Korean subculture event data with SQL" },
   ];
 }
 
 export default function Home() {
-  const [SqlShellClient, setSqlShellClient] = useState<React.ComponentType>();
+  const [RoomClient, setRoomClient] = useState<React.ComponentType>();
 
   useEffect(() => {
-    void import("../../components/sql-shell.client").then((m) => {
-      setSqlShellClient(() => m.SqlShellClient);
+    void import("../../components/room.client").then((m) => {
+      setRoomClient(() => m.RoomClient);
       return m;
     });
   }, []);
 
-  return (
-    <main style={{ padding: "2rem", maxWidth: "1200px", margin: "0 auto" }}>
-      <h1 style={{ marginBottom: "0.5rem" }}>KATI</h1>
-      <p style={{ marginBottom: "1.5rem", color: "#666" }}>
-        Query Korean subculture event data using DuckDB SQL. Runs entirely in your browser.
-      </p>
-      {SqlShellClient ? <SqlShellClient /> : <div>Loading SQL Shell...</div>}
-    </main>
-  );
+  if (!RoomClient) {
+    return (
+      <div className="flex h-screen items-center justify-center">
+        <div className="text-center">
+          <div className="text-lg font-medium">Loading KATI SQL Workbench...</div>
+          <div className="text-sm text-gray-500 mt-2">Initializing DuckDB</div>
+        </div>
+      </div>
+    );
+  }
+
+  return <RoomClient />;
 }

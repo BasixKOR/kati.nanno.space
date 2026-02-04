@@ -1,0 +1,15 @@
+import { RoomShell } from "@sqlrooms/room-shell";
+import { ThemeProvider } from "@sqlrooms/ui";
+import { roomStore } from "../lib/sqlrooms/store";
+
+export function Room() {
+  return (
+    <ThemeProvider defaultTheme="light" storageKey="kati-theme">
+      <RoomShell className="h-screen" roomStore={roomStore}>
+        <RoomShell.Sidebar />
+        <RoomShell.LayoutComposer />
+        <RoomShell.LoadingProgress />
+      </RoomShell>
+    </ThemeProvider>
+  );
+}

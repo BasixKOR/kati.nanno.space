@@ -64,6 +64,8 @@
       "files": [
         "vite.config.ts",
         "react-router.config.ts",
+        "tailwind.config.ts",
+        "postcss.config.js",
         "**/app/root.tsx",
         "**/app/routes.ts",
         "**/app/routes/**/*.tsx"
