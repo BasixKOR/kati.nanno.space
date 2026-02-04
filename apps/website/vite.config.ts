@@ -12,9 +12,17 @@ export default defineConfig({
       "@sqlrooms/duckdb",
       "@sqlrooms/ui",
       "@sqlrooms/room-store",
+      "@sqlrooms/sql-editor",
+      "@sqlrooms/data-table",
     ],
   },
   optimizeDeps: {
-    include: ["@sqlrooms/room-shell", "@sqlrooms/duckdb", "@sqlrooms/ui"],
+    include: [
+      "@sqlrooms/room-shell",
+      "@sqlrooms/duckdb",
+      "@sqlrooms/ui",
+      "@sqlrooms/sql-editor",
+      "@sqlrooms/data-table",
+    ],
   },
 });
