@@ -4,10 +4,33 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "dev": "react-router dev",
+    "build": "react-router build",
+    "start": "react-router-serve ./build/server/index.js",
     "check:lint": "oxlint",
-    "check:type": "tsc --noEmit",
+    "check:type": "react-router typegen && tsc --noEmit",
     "check:fmt": "oxfmt --check",
     "fix:lint": "oxlint --fix",
     "fix:fmt": "oxfmt"
+  },
+  "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.29.0",
+    "@react-router/node": "^7.2.0",
+    "@react-router/serve": "^7.2.0",
+    "isbot": "^5.1.27",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "react-router": "^7.2.0"
+  },
+  "devDependencies": {
+    "@react-router/dev": "^7.2.0",
+    "@react-router/remix-routes-option-adapter": "^7.2.0",
+    "@types/react": "^19.0.10",
+    "@types/react-dom": "^19.0.4",
+    "oxfmt": "catalog:",
+    "oxlint": "catalog:",
+    "remix-flat-routes": "^0.6.5",
+    "typescript": "catalog:",
+    "vite": "^6.2.1"
   }
 }
