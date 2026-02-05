@@ -60,7 +60,15 @@ export function rowToCircle(row: Record<string, unknown>): Circle {
   if (row.user_nickname != null) circle.user_nickname = String(row.user_nickname);
   if (row.homepage != null) circle.homepage = String(row.homepage);
   if (row.introduce != null) circle.introduce = String(row.introduce);
-  if (Array.isArray(row.tag)) circle.tag = row.tag.map(String);
+  if (row.tag) {
+    // DuckDB may return arrays in different formats
+    const tagArray = Array.isArray(row.tag)
+      ? row.tag
+      : typeof (row.tag as { toArray?: () => unknown[] }).toArray === "function"
+        ? (row.tag as { toArray: () => unknown[] }).toArray()
+        : [];
+    if (tagArray.length > 0) circle.tag = tagArray.map(String);
+  }
   circle.image_info_url = row.image_info_url != null ? String(row.image_info_url) : null;
 
   return circle;

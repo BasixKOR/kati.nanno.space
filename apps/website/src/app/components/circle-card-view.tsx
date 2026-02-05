@@ -94,19 +94,30 @@ export function CircleCardView({
           ORDER BY booth_no
         `);
 
-        const rows = result.toArray().map((row) => ({
-          id: row.id,
-          event_id: row.event_id,
-          booth_no: row.booth_no,
-          booth_name: row.booth_name,
-          booth_type: row.booth_type,
-          date_type: row.date_type,
-          user_nickname: row.user_nickname,
-          homepage: row.homepage,
-          introduce: row.introduce,
-          tag: row.tag ?? [],
-          image_info_url: row.image_info_url,
-        }));
+        const rows = result.toArray().map((row) => {
+          // DuckDB may return arrays in different formats
+          let tagArray: string[] = [];
+          if (row.tag) {
+            tagArray = Array.isArray(row.tag)
+              ? row.tag.map(String)
+              : typeof row.tag.toArray === "function"
+                ? row.tag.toArray().map(String)
+                : [];
+          }
+          return {
+            id: row.id,
+            event_id: row.event_id,
+            booth_no: row.booth_no,
+            booth_name: row.booth_name,
+            booth_type: row.booth_type,
+            date_type: row.date_type,
+            user_nickname: row.user_nickname,
+            homepage: row.homepage,
+            introduce: row.introduce,
+            tag: tagArray,
+            image_info_url: row.image_info_url,
+          };
+        });
 
         setCircles(rows);
       } catch (error) {
