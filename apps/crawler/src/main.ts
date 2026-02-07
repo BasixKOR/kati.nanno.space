@@ -1,35 +1,113 @@
-import { dirname, resolve } from "node:path";
-import { illustarTasks } from "./app/illustar.ts";
-import { persist } from "./app/persist.ts";
-import { createFetcher } from "./services/endpoint.ts";
+import { resolve } from "node:path";
+
+import { object, or } from "@optique/core/constructs";
+import { optional } from "@optique/core/modifiers";
+import { argument, command, constant } from "@optique/core/primitives";
+import { string } from "@optique/core/valueparser";
+import { run } from "@optique/run";
+
 import { createSession, runTask } from "./features/task/index.ts";
-import type { PersistConfig, Task } from "./features/task/index.ts";
+import type { PersistConfig, Task, TaskContextType } from "./features/task/index.ts";
 import type { CollectionModel, Infer } from "./features/model/index.ts";
-import { fileURLToPath } from "node:url";
 import { renderTasks } from "./ui.tsx";
 
-const __dirname = dirname(fileURLToPath(import.meta.url));
-const dataDir = resolve(__dirname, "../../../data/illustar");
+async function runTasks(createTasks: (() => Task<unknown>)[]): Promise<void> {
+  const session = createSession({} as TaskContextType);
+  const entries = createTasks.map((create) => {
+    const t = create();
+    return { name: t.name, result: runTask(t, session) };
+  });
+  await renderTasks(entries);
+  process.exit(0);
+}
 
-const fetcher = createFetcher();
+const boothInfoCommands = or(
+  command(
+    "fetch",
+    object({ action: constant("fetch" as const), url: argument(string({ metavar: "URL" })) }),
+  ),
+  command(
+    "analyze",
+    object({
+      action: constant("analyze" as const),
+      hash: optional(argument(string({ metavar: "HASH" }))),
+    }),
+  ),
+  command(
+    "review",
+    object({
+      action: constant("review" as const),
+      hash: optional(argument(string({ metavar: "HASH" }))),
+    }),
+  ),
+);
 
-const persistFn = async (config: PersistConfig, data: unknown): Promise<void> => {
-  await persist(
-    config.model as CollectionModel,
-    data as Infer<CollectionModel>,
-    config.name,
-    dataDir,
-  );
-};
+const parser = or(
+  command(
+    "booth-info",
+    object({ command: constant("booth-info" as const), sub: boothInfoCommands }),
+  ),
+  command("illustar", object({ command: constant("illustar" as const) })),
+);
 
-const session = createSession({ fetcher }, { persist: persistFn });
+const result = run(parser, { help: "both", programName: "pnpm crawl" });
 
-const entries = illustarTasks.map((createTask) => {
-  const task = createTask();
-  const result = runTask(task as Task<unknown>, session);
-  return { name: task.name, result };
-});
+if (result.command === "booth-info") {
+  const { sub } = result;
 
-await renderTasks(entries);
+  if (sub.action === "fetch") {
+    const { boothInfoFetch } = await import("./app/booth-info-fetch.ts");
+    await runTasks([() => boothInfoFetch(sub.url)]);
+  } else if (sub.action === "analyze") {
+    const { boothInfoAnalyze } = await import("./app/booth-info-analyze.ts");
+    if (sub.hash) {
+      await runTasks([() => boothInfoAnalyze(sub.hash!)]);
+    } else {
+      const { discoverAnalyzeHashes } = await import("./app/booth-info-shared.ts");
+      const hashes = await discoverAnalyzeHashes();
+      if (hashes.length === 0) {
+        console.log("All images already analyzed. Pass a HASH to force re-analyze.");
+        process.exit(0);
+      }
+      console.log(`Found ${hashes.length} image(s) to analyze`);
+      await runTasks(hashes.map((h) => () => boothInfoAnalyze(h)));
+    }
+  } else {
+    const { discoverReviewHash } = await import("./app/booth-info-shared.ts");
+    const hash = sub.hash ?? (await discoverReviewHash());
+    if (!hash) {
+      console.error("No hash to review. Provide a HASH or run analyze first.");
+      process.exit(1);
+    }
+    console.log(`Reviewing ${hash.slice(0, 12)}…`);
+    const { boothInfoReview } = await import("./app/booth-info-review.tsx");
+    await runTasks([() => boothInfoReview(hash)]);
+  }
+} else {
+  const { illustarTasks } = await import("./app/illustar.ts");
+  const { persist } = await import("./app/persist.ts");
+  const { createFetcher } = await import("./services/endpoint.ts");
 
-process.exit(0);
+  const dataDir = resolve(import.meta.dirname!, "../../../data/illustar");
+  const fetcher = createFetcher();
+
+  const persistFn = async (config: PersistConfig, data: unknown): Promise<void> => {
+    await persist(
+      config.model as CollectionModel,
+      data as Infer<CollectionModel>,
+      config.name,
+      dataDir,
+    );
+  };
+
+  const session = createSession({ fetcher }, { persist: persistFn });
+
+  const entries = illustarTasks.map((createTask) => {
+    const task = createTask();
+    const resultEntry = runTask(task as Task<unknown>, session);
+    return { name: task.name, result: resultEntry };
+  });
+
+  await renderTasks(entries);
+  process.exit(0);
+}

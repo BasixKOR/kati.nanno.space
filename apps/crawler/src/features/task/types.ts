@@ -30,11 +30,18 @@ export interface Task<T> {
 // eslint-disable-next-line @typescript-eslint/no-empty-object-type
 export interface TaskContext {}
 
+// --- Progress Reporting ---
+
+export type ProgressValue =
+  | "indefinite"
+  | { kind: "percentage"; value: number }
+  | { kind: "count"; value: number };
+
 // --- Work Context for Progress Reporting ---
 
 export interface WorkContext {
   description(str: string): void;
-  progress(value: "indefinite" | number): void;
+  progress(value: ProgressValue): void;
 }
 
 // --- Task Instructions (yielded to runner) ---
@@ -52,7 +59,8 @@ export type TaskEvent =
   | { kind: "taskEnd"; name: string; result: TaskResult<unknown>; timestamp: number }
   | { kind: "taskDependency"; task: string; dependsOn: string }
   | { kind: "workStart"; task: string; description?: string }
-  | { kind: "workProgress"; task: string; value: "indefinite" | number }
+  | { kind: "workDescription"; task: string; description: string }
+  | { kind: "workProgress"; task: string; value: ProgressValue }
   | { kind: "workEnd"; task: string }
   | { kind: "spawnStart"; parent: string; children: readonly string[] }
   | { kind: "spawnEnd"; parent: string };

@@ -1,4 +1,11 @@
-import type { TaskEntry, TaskEvent, TaskState, TaskStatus, WorkState } from "./app/types.ts";
+import type {
+  ProgressValue,
+  TaskEntry,
+  TaskEvent,
+  TaskState,
+  TaskStatus,
+  WorkState,
+} from "./app/types.ts";
 import * as v from "valibot";
 import { Box, Text, render, useInput, useStdin } from "ink";
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -52,6 +59,12 @@ function formatDuration(ms: number): string {
   const minutes = Math.floor(ms / 60_000);
   const seconds = ((ms % 60_000) / 1000).toFixed(0);
   return `${minutes}m ${seconds}s`;
+}
+
+function formatProgress(progress: ProgressValue): string {
+  if (progress === "indefinite") return "…";
+  if (progress.kind === "count") return `${progress.value}`;
+  return `${Math.round(progress.value * 100)}%`;
 }
 
 function StatusIcon({ status }: { status: TaskStatus }) {
@@ -109,6 +122,27 @@ function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
   );
 }
 
+function WorkDots({ works }: { works: WorkState[] }) {
+  if (works.length === 0) return undefined;
+
+  return (
+    <Box gap={1} marginLeft={1}>
+      {works.map((w) => {
+        switch (w.status) {
+          case "done":
+            return <Text color="green">●</Text>;
+          case "running":
+            return <Text color="yellow">○</Text>;
+          case "error":
+            return <Text color="red">●</Text>;
+          default:
+            return <Text dimColor>○</Text>;
+        }
+      })}
+    </Box>
+  );
+}
+
 function TaskRow({
   name,
   state,
@@ -126,6 +160,7 @@ function TaskRow({
     state.startedAt !== undefined && state.endedAt !== undefined
       ? state.endedAt - state.startedAt
       : undefined;
+  const currentWork = state.works.findLast((w) => w.status === "running");
 
   return (
     <Box flexDirection="column">
@@ -133,11 +168,20 @@ function TaskRow({
         <Text>{focused ? "▸" : " "}</Text>
         <StatusIcon status={state.status} />
         <Text bold={focused}>{name}</Text>
+        <WorkDots works={state.works} />
         {duration !== undefined ? <Text dimColor>({formatDuration(duration)})</Text> : undefined}
         {state.status === "error" && state.error ? (
           <Text color="red">{formatErrorMessage(state.error)}</Text>
         ) : undefined}
       </Box>
+      {currentWork?.description ? (
+        <Box marginLeft={4} gap={1}>
+          <Text dimColor>{currentWork.description}</Text>
+          {currentWork.progress !== undefined ? (
+            <Text dimColor>({formatProgress(currentWork.progress)})</Text>
+          ) : undefined}
+        </Box>
+      ) : undefined}
       {mismatches && !expanded ? (
         <Box marginLeft={3}>
           <PropertyMismatchList mismatches={mismatches} />
@@ -200,6 +244,15 @@ function consumeEvents(
               works: [...prev.works, newWork],
             };
           });
+          break;
+        }
+        case "workDescription": {
+          update(event.task, (prev) => ({
+            ...prev,
+            works: prev.works.map((w, i) =>
+              i === prev.works.length - 1 ? { ...w, description: event.description } : w,
+            ),
+          }));
           break;
         }
         case "workProgress": {

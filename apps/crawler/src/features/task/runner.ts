@@ -113,9 +113,11 @@ async function processInstruction(
           if (!emittedStart) {
             session.emit({ kind: "workStart", task: currentTaskName, description: str });
             emittedStart = true;
+          } else {
+            session.emit({ kind: "workDescription", task: currentTaskName, description: str });
           }
         },
-        progress(value: "indefinite" | number) {
+        progress(value) {
           session.emit({ kind: "workProgress", task: currentTaskName, value });
         },
       };

@@ -11,6 +11,7 @@ export type {
   TaskEvent,
   TaskInstruction,
   WorkContext,
+  ProgressValue,
   PersistConfig,
   Ok as OkType,
   Err as ErrType,

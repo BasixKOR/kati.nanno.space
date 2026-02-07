@@ -1,6 +1,6 @@
-import type { RunResult } from "../features/task/index.ts";
+import type { RunResult, ProgressValue } from "../features/task/index.ts";
 
-export type { TaskEvent } from "../features/task/index.ts";
+export type { TaskEvent, ProgressValue } from "../features/task/index.ts";
 
 export interface TaskEntry {
   readonly name: string;
@@ -13,7 +13,7 @@ export interface WorkState {
   name: string;
   status: TaskStatus;
   description?: string;
-  progress?: "indefinite" | number;
+  progress?: ProgressValue;
   error?: unknown;
 }
 
