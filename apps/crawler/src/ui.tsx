@@ -125,8 +125,8 @@ function WorkRow({ work, expanded }: { work: WorkState; expanded: boolean }) {
   );
 }
 
-function workDotElement(w: WorkState): React.ReactNode {
-  switch (w.status) {
+function statusDot(status: TaskStatus | undefined): React.ReactNode {
+  switch (status) {
     case "done": {
       return <Text color="green">●</Text>;
     }
@@ -136,29 +136,78 @@ function workDotElement(w: WorkState): React.ReactNode {
     case "error": {
       return <Text color="red">●</Text>;
     }
+    case "skipped": {
+      return <Text dimColor>–</Text>;
+    }
     default: {
       return <Text dimColor>○</Text>;
     }
   }
 }
 
-function WorkDots({ works }: { works: WorkState[] }) {
-  if (works.length === 0) return undefined;
+interface DotItem {
+  status: TaskStatus | undefined;
+  /** Completion timestamp for ordering; undefined = still active */
+  endedAt: number | undefined;
+}
 
-  if (works.length >= 13) {
-    const hiddenCount = works.length - 3;
-    const tail = works.slice(-3);
+function ProgressDots({
+  works,
+  childNames,
+  states,
+}: {
+  works: WorkState[];
+  childNames: string[];
+  states: Map<string, TaskState>;
+}) {
+  const items: DotItem[] = [];
+
+  // Works don't have endedAt — use index as implicit order (they're sequential)
+  for (const w of works) {
+    items.push({ status: w.status, endedAt: w.status === "done" ? 0 : undefined });
+  }
+
+  // Children have endedAt from their TaskState
+  for (const name of childNames) {
+    const s = states.get(name);
+    items.push({ status: s?.status, endedAt: s?.endedAt });
+  }
+
+  if (items.length === 0) return undefined;
+
+  // Sort: completed items by endedAt, then active items at the end
+  const sorted = items.toSorted((a, b) => {
+    const aDone = a.endedAt !== undefined;
+    const bDone = b.endedAt !== undefined;
+    if (aDone && bDone) return a.endedAt - b.endedAt;
+    if (aDone) return -1;
+    if (bDone) return 1;
+    return 0;
+  });
+
+  if (sorted.length <= 16) {
     return (
       <Box gap={1} marginLeft={1}>
-        <Text dimColor>{hiddenCount}</Text>
-        {tail.map((w) => workDotElement(w))}
+        {sorted.map((d) => statusDot(d.status))}
       </Box>
     );
   }
 
+  // Text summary + last 3 dots
+  const counts = { done: 0, skipped: 0, pending: 0, running: 0, error: 0 };
+  for (const d of sorted) {
+    counts[d.status ?? "pending"]++;
+  }
+  const parts: string[] = [];
+  if (counts.done > 0) parts.push(`${counts.done} done`);
+  if (counts.skipped > 0) parts.push(`${counts.skipped} skipped`);
+  if (counts.pending > 0) parts.push(`${counts.pending} pending`);
+
+  const tail = sorted.slice(-3);
   return (
     <Box gap={1} marginLeft={1}>
-      {works.map((w) => workDotElement(w))}
+      {parts.length > 0 ? <Text dimColor>{parts.join(", ")}</Text> : undefined}
+      {tail.map((d) => statusDot(d.status))}
     </Box>
   );
 }
@@ -190,7 +239,7 @@ function TaskRow({
         <Text>{focused ? "▸" : " "}</Text>
         <StatusIcon status={state.status} />
         <Text bold={focused}>{name}</Text>
-        <WorkDots works={state.works} />
+        <ProgressDots works={state.works} childNames={state.children} states={states} />
         {duration !== undefined ? <Text dimColor>({formatDuration(duration)})</Text> : undefined}
         {state.status === "error" && state.error ? (
           <Text color="red">{formatErrorMessage(state.error)}</Text>
@@ -215,7 +264,7 @@ function TaskRow({
         </Box>
       ) : undefined}
       {state.children.length > 0 ? (
-        <ChildrenView childNames={state.children} states={states} expanded={expanded} />
+        <ChildrenRows childNames={state.children} states={states} expanded={expanded} />
       ) : undefined}
       {expanded &&
         state.works.map((work, i) => (
@@ -271,7 +320,7 @@ function CompletedSummary({
   );
 }
 
-function ChildrenView({
+function ChildrenRows({
   childNames,
   states,
   expanded,
@@ -320,50 +369,29 @@ function ChildrenView({
     );
   }
 
-  // Collapsed: show running + error individually, summary for rest
-  const running = children.filter((c) => c.state?.status === "running");
-  const errored = children.filter((c) => c.state?.status === "error");
-  const doneCount = children.filter((c) => c.state?.status === "done").length;
-  const skippedCount = children.filter((c) => c.state?.status === "skipped").length;
-  const pendingCount = children.filter((c) => !c.state || c.state.status === "pending").length;
-
-  const completedParts: string[] = [];
-  if (doneCount > 0) completedParts.push(`${doneCount} done`);
-  if (skippedCount > 0) completedParts.push(`${skippedCount} skipped`);
+  // Collapsed: only show running + error children as rows
+  const active = children.filter(
+    (c) => c.state?.status === "running" || c.state?.status === "error",
+  );
+  if (active.length === 0) return undefined;
 
   return (
     <Box flexDirection="column" marginLeft={2}>
-      {running.map(({ name, state }) => {
+      {active.map(({ name, state }) => {
         const currentWork = state?.works.findLast((w) => w.status === "running");
         return (
           <Box key={name} gap={1}>
-            <StatusIcon status="running" />
+            <StatusIcon status={state?.status ?? "pending"} />
             <Text dimColor>{name}</Text>
-            {currentWork?.description ? (
+            {state?.status === "running" && currentWork?.description ? (
               <Text dimColor> — {currentWork.description}</Text>
+            ) : undefined}
+            {state?.status === "error" && state.error ? (
+              <Text color="red"> {formatErrorMessage(state.error)}</Text>
             ) : undefined}
           </Box>
         );
       })}
-      {errored.map(({ name, state }) => (
-        <Box key={name} gap={1}>
-          <StatusIcon status="error" />
-          <Text dimColor>{name}</Text>
-          {state?.error ? <Text color="red"> {formatErrorMessage(state.error)}</Text> : undefined}
-        </Box>
-      ))}
-      {completedParts.length > 0 ? (
-        <Box gap={1}>
-          <Text color="green">✓</Text>
-          <Text dimColor>{completedParts.join(", ")}</Text>
-        </Box>
-      ) : undefined}
-      {pendingCount > 0 ? (
-        <Box gap={1}>
-          <Text dimColor>○</Text>
-          <Text dimColor>{pendingCount} pending</Text>
-        </Box>
-      ) : undefined}
     </Box>
   );
 }
