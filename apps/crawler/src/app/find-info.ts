@@ -25,14 +25,25 @@ import { persist } from "./persist.ts";
 
 const CONCURRENCY = 8;
 
+// Illustar circle applications open ~3 months before event start
+const ILLUSTAR_ACTIVITY_LEAD_MS = 90 * 24 * 60 * 60 * 1000;
+
 // Keywords for filtering tweets
 const MEDIA_KEYWORDS = ["일러스타", "일러페스", "일페"];
 const LINK_KEYWORDS = ["선입금"];
 
+interface DateRange {
+  start: Date;
+  end: Date;
+}
+
 interface CircleInfo {
   id: number;
+  name: string;
   homepage: string;
   introduce: string;
+  /** Event activity window: 3 months before start_date through end_date */
+  window: DateRange;
 }
 
 const DATA_DIR = resolve(import.meta.dirname!, "../../../../data");
@@ -44,6 +55,11 @@ function tweetMatchesKeywords(text: string, keywords: string[]): boolean {
   return keywords.some((kw) => lower.includes(kw));
 }
 
+function isInWindow(date: string | Date, window: DateRange): boolean {
+  const d = typeof date === "string" ? new Date(date) : date;
+  return d >= window.start && d <= window.end;
+}
+
 function truncateText(text: string, maxLen = 280): string {
   if (text.length <= maxLen) return text;
   return `${text.slice(0, maxLen)}…`;
@@ -52,7 +68,7 @@ function truncateText(text: string, maxLen = 280): string {
 async function loadCirclesFromDisk(): Promise<CircleInfo[]> {
   const illustarDir = join(DATA_DIR, "illustar");
 
-  // Load ongoing booth info to get event IDs
+  // Load ongoing booth info to get event IDs and date ranges
   const boothInfoContent = await readFile(join(illustarDir, "ongoing-booth-info.jsonl"), "utf8");
   const boothInfoFiles = new Map([["ongoing-booth-info.jsonl", boothInfoContent]]);
   const boothInfoMap = deserialize(
@@ -60,9 +76,19 @@ async function loadCirclesFromDisk(): Promise<CircleInfo[]> {
     { files: boothInfoFiles },
     "ongoing-booth-info",
   ) as Infer<typeof ongoingBoothInfoCollection>;
-  const ongoingEventIds = new Set([...boothInfoMap.values()].map((b) => b.id));
 
-  // Load circles and filter to ongoing events
+  // Build event ID → date window map
+  const eventWindows = new Map<number, DateRange>();
+  for (const event of boothInfoMap.values()) {
+    if (event.start_date != undefined && event.end_date != undefined) {
+      eventWindows.set(event.id, {
+        start: new Date(event.start_date - ILLUSTAR_ACTIVITY_LEAD_MS),
+        end: new Date(event.end_date),
+      });
+    }
+  }
+
+  // Load circles and filter to ongoing events with known date ranges
   const circlesContent = await readFile(join(illustarDir, "circles.jsonl"), "utf8");
   const circlesFiles = new Map([["circles.jsonl", circlesContent]]);
   const circlesMap = deserialize(
@@ -73,8 +99,15 @@ async function loadCirclesFromDisk(): Promise<CircleInfo[]> {
 
   const circles: CircleInfo[] = [];
   for (const circle of circlesMap.values()) {
-    if (ongoingEventIds.has(circle.event_id)) {
-      circles.push({ id: circle.id, homepage: circle.homepage, introduce: circle.introduce });
+    const window = eventWindows.get(circle.event_id);
+    if (window) {
+      circles.push({
+        id: circle.id,
+        name: circle.booth_name,
+        homepage: circle.homepage,
+        introduce: circle.introduce,
+        window,
+      });
     }
   }
 
@@ -121,6 +154,7 @@ function fetchGoodsListTask(
 function scanTwitterTask(
   circleId: number,
   username: string,
+  window: DateRange,
   mediaResults: Infer<typeof twitterMediaCollection>,
   linkResults: Infer<typeof twitterLinkCollection>,
   checkpoint: FindInfoCheckpoint,
@@ -136,7 +170,13 @@ function scanTwitterTask(
 
       const user = await twitterChannel.enqueue((client) => client.user.details(username));
       if (!user) return [];
-      return await fetchUserTimeline(twitterChannel, user.id, stopBeforeId);
+      const options: { stopBeforeTweetId?: string; afterDate: Date } = {
+        afterDate: window.start,
+      };
+      if (stopBeforeId) {
+        options.stopBeforeTweetId = stopBeforeId;
+      }
+      return await fetchUserTimeline(twitterChannel, user.id, options);
     });
 
     let newestTweetId = stopBeforeId;
@@ -146,6 +186,9 @@ function scanTwitterTask(
       if (!newestTweetId || BigInt(tweet.id) > BigInt(newestTweetId)) {
         newestTweetId = tweet.id;
       }
+
+      // Skip tweets outside the event activity window
+      if (!isInWindow(tweet.createdAt, window)) continue;
 
       const text = tweet.fullText;
 
@@ -244,7 +287,7 @@ function processCircle(
   witchformProducts: Infer<typeof witchformProductCollection>,
   checkpoint: FindInfoCheckpoint,
 ): Task<void> {
-  return task(`circle-${circle.id}`, function* () {
+  return task(`circle-${circle.id} ${circle.name}`, function* () {
     const subTasks: Task<unknown>[] = [];
 
     // Illustar goods list
@@ -254,7 +297,14 @@ function processCircle(
     const [firstTwitter] = extractTwitterUrls(circle.homepage);
     if (firstTwitter) {
       subTasks.push(
-        scanTwitterTask(circle.id, firstTwitter.username, twitterMedia, twitterLinks, checkpoint),
+        scanTwitterTask(
+          circle.id,
+          firstTwitter.username,
+          circle.window,
+          twitterMedia,
+          twitterLinks,
+          checkpoint,
+        ),
       );
     }
 

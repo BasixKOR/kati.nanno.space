@@ -83,13 +83,20 @@ function tweetIdLte(a: string, b: string): boolean {
   return BigInt(a) <= BigInt(b);
 }
 
-/** Fetch user timeline pages, stopping at `stopBeforeTweetId` (exclusive). */
+export interface TimelineOptions {
+  stopBeforeTweetId?: string;
+  /** Stop paginating when tweets are older than this date */
+  afterDate?: Date;
+  maxPages?: number;
+}
+
+/** Fetch user timeline pages, stopping at checkpoint ID or date cutoff. */
 export async function fetchUserTimeline(
   channel: TwitterChannel,
   userId: string,
-  stopBeforeTweetId?: string,
-  maxPages = 5,
+  options: TimelineOptions = {},
 ): Promise<Tweet[]> {
+  const { stopBeforeTweetId, afterDate, maxPages = 5 } = options;
   const allTweets: Tweet[] = [];
   let cursor: string | undefined;
 
@@ -104,16 +111,21 @@ export async function fetchUserTimeline(
 
     if (data.list.length === 0) break;
 
-    let hitCheckpoint = false;
+    let hitStop = false;
     for (const tweet of data.list) {
       if (stopBeforeTweetId && tweetIdLte(tweet.id, stopBeforeTweetId)) {
-        hitCheckpoint = true;
+        hitStop = true;
+        break;
+      }
+      // Stop when tweets are older than the date cutoff
+      if (afterDate && new Date(tweet.createdAt) < afterDate) {
+        hitStop = true;
         break;
       }
       allTweets.push(tweet);
     }
 
-    if (hitCheckpoint) break;
+    if (hitStop) break;
     if (!data.next) break;
     cursor = data.next;
   }
