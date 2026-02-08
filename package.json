@@ -11,16 +11,22 @@
     "check:fmt": "turbo run check:fmt",
     "fix:lint": "turbo run fix:lint",
     "fix:fmt": "turbo run fix:fmt",
-    "crawl": "pnpm --filter @kati/crawler start",
+    "crawl": "dotenv -e .env.local -- pnpm --filter @kati/crawler start",
     "website": "pnpm --filter @kati/website dev"
   },
   "devDependencies": {
     "@commitlint/cli": "^20.4.1",
+    "dotenv-cli": "^8.0.0",
     "@commitlint/config-conventional": "^20.4.1",
     "lefthook": "^2.0.16",
     "oxfmt": "catalog:",
     "oxlint": "catalog:",
     "turbo": "^2.8.1",
     "typescript": "catalog:"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "sharp"
+    ]
   }
 }
