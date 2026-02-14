@@ -9,7 +9,7 @@ import { run } from "@optique/run";
 import { createSession, runTask } from "./features/task/index.ts";
 import type { PersistConfig, Task, TaskContextType } from "./features/task/index.ts";
 import type { CollectionModel, Infer } from "./features/model/index.ts";
-import { renderTasks } from "./ui.tsx";
+import { renderTasks } from "./features/task/ui/index.ts";
 
 async function runTasks(createTasks: (() => Task<unknown>)[]): Promise<void> {
   const session = createSession({} as TaskContextType);
@@ -42,6 +42,7 @@ const parser = or(
   ),
   command("illustar", object({ command: constant("illustar" as const) })),
   command("find-info", object({ command: constant("find-info" as const) })),
+  command("analyze-info", object({ command: constant("analyze-info" as const) })),
 );
 
 const result = run(parser, { help: "both", programName: "pnpm crawl" });
@@ -90,13 +91,20 @@ if (result.command === "booth-info") {
 
   await renderTasks(entries);
   process.exit(0);
+} else if (result.command === "analyze-info") {
+  const { analyzeInfo } = await import("./app/analyze-info.ts");
+  const { TwitterChannel } = await import("./services/twitter/index.ts");
+  const apiKey = process.env.CRAWLER_TWITTER_API_KEY;
+  const twitter = apiKey ? new TwitterChannel({ apiKey }) : undefined;
+  await runTasks([() => analyzeInfo(twitter)]);
 } else {
   const { findInfo } = await import("./app/find-info.ts");
   const { createFetcher } = await import("./services/endpoint.ts");
   const { TwitterChannel } = await import("./services/twitter/index.ts");
 
   const fetcher = createFetcher();
-  const twitterChannel = new TwitterChannel();
+  const apiKey = process.env.CRAWLER_TWITTER_API_KEY;
+  const twitterChannel = new TwitterChannel(apiKey ? { apiKey } : undefined);
   const session = createSession({ fetcher, twitterChannel });
 
   const t = findInfo();
