@@ -1,5 +1,5 @@
-import { Rettiwt } from "rettiwt-api";
-import type { CursoredData, Tweet } from "rettiwt-api";
+import { Rettiwt, TweetRepliesSortType } from "rettiwt-api";
+import type { CursoredData, ITweetFilter, Tweet } from "rettiwt-api";
 
 declare module "../../features/task/types.ts" {
   interface TaskContext {
@@ -18,10 +18,13 @@ export class TwitterChannel {
   private processing = false;
   private readonly delayMs: number;
   private readonly client: Rettiwt;
+  readonly hasAuth: boolean;
 
-  constructor(options?: { delayMs?: number }) {
+  constructor(options?: { delayMs?: number; apiKey?: string }) {
     this.delayMs = options?.delayMs ?? 2000;
-    this.client = new Rettiwt();
+    const apiKey = options?.apiKey;
+    this.hasAuth = apiKey !== undefined;
+    this.client = new Rettiwt(apiKey ? { apiKey } : undefined);
   }
 
   enqueue<T>(execute: (client: Rettiwt) => Promise<T>): Promise<T> {
@@ -72,6 +75,13 @@ function isRateLimitError(error: unknown): boolean {
   return false;
 }
 
+function is404(error: unknown): boolean {
+  if (error instanceof Error) {
+    return error.message.includes("404");
+  }
+  return false;
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, ms);
@@ -86,21 +96,20 @@ function tweetIdLte(a: string, b: string): boolean {
 export interface TimelineOptions {
   stopBeforeTweetId?: string;
   /** Stop paginating when tweets are older than this date */
-  afterDate?: Date;
-  maxPages?: number;
+  afterDate: Date;
 }
 
 /** Fetch user timeline pages, stopping at checkpoint ID or date cutoff. */
 export async function fetchUserTimeline(
   channel: TwitterChannel,
   userId: string,
-  options: TimelineOptions = {},
+  options: TimelineOptions,
 ): Promise<Tweet[]> {
-  const { stopBeforeTweetId, afterDate, maxPages = 5 } = options;
+  const { stopBeforeTweetId, afterDate } = options;
   const allTweets: Tweet[] = [];
   let cursor: string | undefined;
 
-  for (let page = 0; page < maxPages; page++) {
+  for (;;) {
     let data: CursoredData<Tweet>;
     try {
       data = await channel.enqueue((client) => client.user.timeline(userId, 20, cursor));
@@ -117,8 +126,7 @@ export async function fetchUserTimeline(
         hitStop = true;
         break;
       }
-      // Stop when tweets are older than the date cutoff
-      if (afterDate && new Date(tweet.createdAt) < afterDate) {
+      if (new Date(tweet.createdAt) < afterDate) {
         hitStop = true;
         break;
       }
@@ -131,4 +139,78 @@ export async function fetchUserTimeline(
   }
 
   return allTweets;
+}
+
+export interface SearchOptions {
+  stopBeforeTweetId?: string;
+  /** Resume pagination from a previously returned cursor */
+  startCursor?: string;
+  /** Maximum number of pages to fetch (default: 50) */
+  maxPages?: number;
+}
+
+export interface SearchResult {
+  tweets: Tweet[];
+  /** Cursor for resuming pagination in a future call */
+  nextCursor: string | undefined;
+}
+
+/** Fetch tweets matching a search filter, paginating until exhaustion or limits. */
+export async function fetchSearchResults(
+  channel: TwitterChannel,
+  filter: ITweetFilter,
+  options?: SearchOptions,
+): Promise<SearchResult> {
+  const { stopBeforeTweetId, startCursor, maxPages = 50 } = options ?? {};
+  const allTweets: Tweet[] = [];
+  let cursor: string | undefined = startCursor;
+
+  for (let page = 0; page < maxPages; page++) {
+    let data: CursoredData<Tweet>;
+    try {
+      data = await channel.enqueue((client) => client.tweet.search(filter, 20, cursor));
+    } catch (error) {
+      // First page failure is fatal — propagate so caller knows search didn't work
+      if (page === 0) throw error;
+      // 404 on later pages = end of results; other errors are worth logging
+      if (!is404(error)) {
+        console.warn("[TwitterChannel] Search failed on page", page, error);
+      }
+      break;
+    }
+
+    if (data.list.length === 0) break;
+
+    let hitStop = false;
+    for (const tweet of data.list) {
+      if (stopBeforeTweetId && tweetIdLte(tweet.id, stopBeforeTweetId)) {
+        hitStop = true;
+        break;
+      }
+      allTweets.push(tweet);
+    }
+
+    if (hitStop) break;
+    if (!data.next) break;
+    cursor = data.next;
+  }
+
+  return { tweets: allTweets, nextCursor: cursor };
+}
+
+/**
+ * Fetch all tweets in a thread (self-reply chain) by the given author.
+ * Uses RELEVANCE sort which returns the full thread in the first batch.
+ */
+export async function fetchThread(
+  channel: TwitterChannel,
+  conversationId: string,
+  authorUsername: string,
+): Promise<Tweet[]> {
+  const data = await channel.enqueue((client) =>
+    client.tweet.replies(conversationId, undefined, TweetRepliesSortType.RELEVANCE),
+  );
+  // Filter to only tweets by the same author
+  const lowerAuthor = authorUsername.toLowerCase();
+  return data.list.filter((tweet) => tweet.tweetBy.userName.toLowerCase() === lowerAuthor);
 }
