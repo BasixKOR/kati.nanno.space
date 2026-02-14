@@ -75,12 +75,12 @@ export function crawlBoothInfo(url: string): Task<BoothProduct[]> {
       return { buf: pngBuf, sha256, width: metadata.width!, height: metadata.height! };
     });
 
-    // Step 2: Call Gemini 2.5 Flash-Lite for structured extraction (streaming + retry)
+    // Step 2: Call Gemini 2.5 Pro for structured extraction (streaming + retry)
     const MAX_RETRIES = 3;
     const extractedProducts = yield* work(async ($) => {
       const hashLabel = imageData.sha256.slice(0, 12);
       const model = createGoogleGenerativeAI({ apiKey: process.env.CRAWLER_AI_KEY_GEMINI! })(
-        "gemini-2.5-flash-lite",
+        "gemini-2.5-pro",
       );
       const messages = [
         {
@@ -95,7 +95,7 @@ export function crawlBoothInfo(url: string): Task<BoothProduct[]> {
       for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
         $.description(
           attempt === 1
-            ? `Extracting products (Gemini 2.5 Flash-Lite) — ${hashLabel}…`
+            ? `Extracting products (Gemini 2.5 Pro) — ${hashLabel}…`
             : `Retrying extraction (${attempt}/${MAX_RETRIES}) — ${hashLabel}…`,
         );
 
