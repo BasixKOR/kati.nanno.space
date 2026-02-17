@@ -38,7 +38,7 @@ export interface TaskContext {}
 export type ProgressValue =
   | "indefinite"
   | { kind: "percentage"; value: number }
-  | { kind: "count"; value: number };
+  | { kind: "count"; value: number; total?: number };
 
 // --- Work Context for Progress Reporting ---
 
@@ -52,7 +52,7 @@ export interface WorkContext {
 export type TaskInstruction =
   | { kind: "yieldTask"; task: Task<unknown> }
   | { kind: "spawn"; tasks: readonly Task<unknown>[] }
-  | { kind: "pool"; tasks: readonly Task<unknown>[]; concurrency: number }
+  | { kind: "pool"; tasks: readonly Task<unknown>[]; concurrency: number; description?: string }
   | { kind: "context" }
   | { kind: "work"; fn: (ctx: WorkContext) => Promise<unknown> };
 

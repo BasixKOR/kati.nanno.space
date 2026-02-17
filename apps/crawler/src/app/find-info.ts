@@ -13,7 +13,7 @@ import {
   witchformProductCollection,
 } from "./models/find-info.ts";
 import { circleDetail } from "../services/illustar/endpoints/circle/[id]/get.ts";
-import { extractTwitterUrls, fetchThread, fetchUserTimeline } from "../services/twitter/index.ts";
+import { extractTwitterUrls, fetchThread, fetchSearchResults } from "../services/twitter/index.ts";
 import {
   extractWitchformUrls,
   fetchAndParseWitchform,
@@ -179,39 +179,57 @@ function scanTwitterTask(
       loaded.fetchedAt != undefined &&
       Date.now() - loaded.fetchedAt.getTime() < RAW_TWEETS_FRESHNESS_MS;
 
-    // Fetch new tweets from timeline
+    // Fetch new tweets via search (excludes RTs server-side to reduce API calls)
     if (twitterChannel.hasAuth && !isFresh) {
       const scanState = checkpoint.twitter_scans.get(username);
       const stopBeforeId = scanState?.newest_seen_tweet_id;
 
-      const tweets = yield* work(async ($) => {
-        $.description(`Scanning @${username} timeline`);
-
-        const user = await twitterChannel.enqueue((client) => client.user.details(username));
-        if (!user) return [];
-        const options: { stopBeforeTweetId?: string; afterDate: Date } = {
-          afterDate: window.start,
-        };
-        if (stopBeforeId) {
-          options.stopBeforeTweetId = stopBeforeId;
-        }
-        return await fetchUserTimeline(twitterChannel, user.id, options);
-      });
-
       let newestTweetId = stopBeforeId;
-      for (const tweet of tweets) {
-        if (!newestTweetId || BigInt(tweet.id) > BigInt(newestTweetId)) {
-          newestTweetId = tweet.id;
-        }
-        rawTweets.set(tweet.id, {
-          id: tweet.id,
-          fullText: tweet.fullText,
-          createdAt: tweet.createdAt,
-          conversationId: tweet.conversationId,
-          media: tweet.media?.map((m) => ({ url: m.url })),
-          urls: tweet.entities.urls,
-        });
-      }
+      let unsavedCount = 0;
+
+      yield* work(async ($) => {
+        $.description(`Searching @${username} tweets`);
+
+        await fetchSearchResults(
+          twitterChannel,
+          {
+            fromUsers: [username],
+            onlyOriginal: true,
+            startDate: window.start,
+            endDate: window.end,
+          },
+          {
+            ...(stopBeforeId ? { stopBeforeTweetId: stopBeforeId } : {}),
+            async onPage(pageTweets) {
+              $.progress({ kind: "count", value: rawTweets.size });
+              for (const tweet of pageTweets) {
+                if (!newestTweetId || BigInt(tweet.id) > BigInt(newestTweetId)) {
+                  newestTweetId = tweet.id;
+                }
+                rawTweets.set(tweet.id, {
+                  id: tweet.id,
+                  fullText: tweet.fullText,
+                  createdAt: tweet.createdAt,
+                  conversationId: tweet.conversationId,
+                  media: tweet.media?.map((m) => ({ url: m.url })),
+                  urls: tweet.entities.urls.filter((u): u is string => u != undefined),
+                });
+                unsavedCount++;
+              }
+
+              // Checkpoint every 100 tweets to allow resuming large fetches
+              if (unsavedCount >= 100) {
+                checkpoint.twitter_scans.set(username, {
+                  newest_seen_tweet_id: newestTweetId!,
+                });
+                await saveUserRawTweets(RAW_TWEETS_DIR, username, rawTweets);
+                await saveCheckpoint(CHECKPOINT_PATH, checkpoint);
+                unsavedCount = 0;
+              }
+            },
+          },
+        );
+      });
 
       if (newestTweetId) {
         checkpoint.twitter_scans.set(username, {
@@ -255,7 +273,7 @@ function scanTwitterTask(
         }
       }
 
-      for (const url of tweet.urls) {
+      for (const url of tweet.urls.filter((u): u is string => u != undefined)) {
         const key = [circleId, tweet.id, url].join("\0");
         linkResults.set(key, {
           circle_id: circleId,
@@ -299,7 +317,7 @@ function scanTwitterTask(
           return Ok(undefined);
         }),
       );
-      yield* pool(threadTasks, CONCURRENCY);
+      yield* pool(threadTasks, CONCURRENCY, { description: "Fetching threads" });
     }
 
     // eslint-disable-next-line unicorn/no-useless-undefined
@@ -321,9 +339,10 @@ function parseWitchformTask(
       return Skipped;
     }
 
-    for (const url of pendingUrls) {
+    for (let i = 0; i < pendingUrls.length; i++) {
+      const url = pendingUrls[i]!;
       const formData = yield* work(async ($) => {
-        $.description(`Parsing Witchform: ${url}`);
+        $.description(`Parsing Witchform (${i + 1}/${pendingUrls.length}): ${url}`);
         return await fetchAndParseWitchform(url);
       });
 
@@ -443,7 +462,7 @@ export function findInfo(): Task<void> {
     const circleTasks = circles.map((circle) =>
       processCircle(circle, goodsImages, twitterMedia, twitterLinks, witchformProducts, checkpoint),
     );
-    yield* pool(circleTasks, CONCURRENCY);
+    yield* pool(circleTasks, CONCURRENCY, { description: "Processing circles" });
 
     // Persist all collections
     yield* work(async ($) => {

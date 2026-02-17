@@ -6,18 +6,10 @@ import sharp from "sharp";
 
 import { Ok, task, work } from "../features/task/index.ts";
 import type { Task } from "../features/task/index.ts";
-import {
-  chunkRequests,
-  createClassificationBatch,
-  getBatchResults,
-  getBatchStatus,
-  isBatchDone,
-  JobState,
-} from "../services/gemini/batch.ts";
+import { classifyImage, formatGeminiError } from "../services/gemini/batch.ts";
 import type { ClassificationRequest } from "../services/gemini/batch.ts";
 import { boothInfoPaths } from "./booth-info-shared.ts";
 import type { BoothImageMeta } from "./booth-info-shared.ts";
-import type { PendingBatch } from "./analyze-info-checkpoint.ts";
 import { loadAnalyzeCheckpoint, saveAnalyzeCheckpoint } from "./analyze-info-checkpoint.ts";
 import { loadUserRawTweets, saveUserRawTweets } from "./raw-tweets-io.ts";
 import type { RawTweetsFile } from "./raw-tweets-io.ts";
@@ -29,8 +21,11 @@ const RAW_TWEETS_DIR = join(FIND_INFO_DIR, "raw-tweets");
 const IMAGE_CACHE_DIR = join(FIND_INFO_DIR, ".image-cache");
 const CHECKPOINT_PATH = join(FIND_INFO_DIR, ".analyze-checkpoint.json");
 
-const CONFIDENCE_THRESHOLD = 0.6;
-const POLL_INTERVAL_MS = 30_000;
+const GEMINI_CONCURRENCY = Math.max(
+  1,
+  Number.parseInt(process.env.CRAWLER_GEMINI_CONCURRENCY ?? "8", 10) || 8,
+);
+const GEMINI_RPM = Math.max(1, Number.parseInt(process.env.CRAWLER_GEMINI_RPM ?? "60", 10) || 60);
 
 /** Pending image waiting for batch classification. */
 interface CollectedImage {
@@ -52,6 +47,24 @@ async function fileExists(path: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+function createRpmGate(rpm: number): () => Promise<void> {
+  const intervalMs = Math.ceil(60_000 / rpm);
+  let nextAllowedAt = 0;
+  let gate = Promise.resolve();
+
+  return async () => {
+    gate = gate.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, nextAllowedAt - now);
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+      nextAllowedAt = Math.max(nextAllowedAt, Date.now()) + intervalMs;
+    });
+    await gate;
+  };
 }
 
 /** Flatten all unclassified media from a user's tweets into a single list. */
@@ -85,241 +98,192 @@ export function analyzeInfo(twitter?: TwitterChannel): Task<void> {
 
       const jsonFiles = files.filter((f) => f.endsWith(".json")).toSorted();
 
-      const userFiles: { username: string; fetchedAt: string; data: RawTweetsFile }[] = [];
+      const userFiles: { username: string; data: RawTweetsFile }[] = [];
       for (const file of jsonFiles) {
         const raw = await readFile(join(RAW_TWEETS_DIR, file), "utf8");
         const data = JSON.parse(raw) as RawTweetsFile;
         const username = file.replace(/\.json$/, "");
-        userFiles.push({ username, fetchedAt: data.fetchedAt, data });
+        userFiles.push({ username, data });
       }
 
       return { checkpoint: cp, userFiles };
     });
 
-    // If there are already pending batches, skip straight to Phase 3
-    const hasPendingBatches = checkpoint.pending_batches.length > 0;
-
-    // ── Phase 1: Collect ────────────────────────────────────────────
+    // ── Phase 1: Collect & download in parallel ────────────────────
     const collected: CollectedImage[] = [];
 
-    if (!hasPendingBatches) {
-      yield* work(async () => {
-        await mkdir(IMAGE_CACHE_DIR, { recursive: true });
-      });
-
-      let downloadCount = 0;
-
-      for (const { username, fetchedAt, data } of userFiles) {
-        if (checkpoint.users_processed.get(username) === fetchedAt) continue;
-
-        const media = collectUnclassifiedMedia(data, checkpoint.classified_images);
-
-        for (const m of media) {
-          const cacheKey = urlHash(m.url);
-          const cachePath = join(IMAGE_CACHE_DIR, `${cacheKey}.png`);
-          const cached = yield* work(async () => fileExists(cachePath));
-
-          if (!cached) {
-            const ok = yield* work(async ($) => {
-              downloadCount++;
-              $.description(`Downloading image ${downloadCount}…`);
-
-              const resp = await fetch(m.url);
-
-              if (resp.status === 404 && twitter) {
-                // Tweet may have been deleted or updated — check via API
-                const tweetDetail = await twitter.enqueue((c) => c.tweet.details(m.tweetId));
-                const loaded = await loadUserRawTweets(RAW_TWEETS_DIR, username);
-                if (!tweetDetail) {
-                  // Tweet deleted — remove from raw-tweets JSON
-                  loaded.tweets.delete(m.tweetId);
-                } else {
-                  // Tweet updated — update entry with new data
-                  loaded.tweets.set(m.tweetId, {
-                    id: tweetDetail.id,
-                    fullText: tweetDetail.fullText,
-                    createdAt: tweetDetail.createdAt,
-                    conversationId: tweetDetail.conversationId,
-                    media: tweetDetail.media?.map((med) => ({ url: med.url })),
-                    urls: tweetDetail.entities.urls,
-                  });
-                }
-                await saveUserRawTweets(RAW_TWEETS_DIR, username, loaded.tweets);
-                return false;
-              }
-
-              if (!resp.ok) {
-                // Non-404 failure — skip this image
-                return false;
-              }
-
-              const arrayBuf = await resp.arrayBuffer();
-              try {
-                const pngBuf = await sharp(Buffer.from(arrayBuf)).png().toBuffer();
-                await writeFile(cachePath, pngBuf);
-              } catch {
-                // Unsupported image format — skip
-                return false;
-              }
-              return true;
-            });
-            if (!ok) continue;
-          }
-
-          collected.push({
-            mediaUrl: m.url,
-            username,
-            tweetId: m.tweetId,
-            tweetText: m.tweetText,
-            cacheKey,
-          });
-        }
-      }
-
-      if (collected.length === 0) {
-        for (const { username, fetchedAt } of userFiles) {
-          checkpoint.users_processed.set(username, fetchedAt);
-        }
-        yield* work(async ($) => {
-          $.description("No new images to classify.");
-          await saveAnalyzeCheckpoint(CHECKPOINT_PATH, checkpoint);
-        });
-        return Ok(undefined);
-      }
+    // Gather all media that need downloading
+    interface DownloadTarget {
+      url: string;
+      username: string;
+      tweetId: string;
+      tweetText: string;
+      cacheKey: string;
+      cachePath: string;
     }
 
-    // ── Phase 2: Submit batches ─────────────────────────────────────
-    if (!hasPendingBatches && collected.length > 0) {
-      const requests: ClassificationRequest[] = yield* work(async ($) => {
-        $.description(`Encoding ${collected.length} images…`);
+    const targets: DownloadTarget[] = [];
 
-        const reqs: ClassificationRequest[] = [];
-        for (const img of collected) {
-          const cachePath = join(IMAGE_CACHE_DIR, `${img.cacheKey}.png`);
-          const pngBuf = await readFile(cachePath);
-          reqs.push({
-            key: img.mediaUrl,
-            pngBase64: pngBuf.toString("base64"),
-            tweetText: img.tweetText,
-          });
-        }
-        return reqs;
-      });
+    for (const { username, data } of userFiles) {
+      const media = collectUnclassifiedMedia(data, checkpoint.classified_images);
 
-      const chunks = chunkRequests(requests);
-      const urlToUsername = new Map(collected.map((c) => [c.mediaUrl, c.username]));
-
-      for (let i = 0; i < chunks.length; i++) {
-        const chunk = chunks[i]!;
-
-        const batchName = yield* work(async ($) => {
-          $.description(`Submitting batch ${i + 1}/${chunks.length} (${chunk.length} images)…`);
-          return createClassificationBatch(chunk, `analyze-info-${i + 1}-${Date.now()}`);
-        });
-
-        const requestKeys: Record<string, { media_url: string; username: string }> = {};
-        for (const req of chunk) {
-          requestKeys[req.key] = { media_url: req.key, username: urlToUsername.get(req.key)! };
-        }
-
-        const pendingBatch: PendingBatch = {
-          batch_name: batchName,
-          created_at: new Date().toISOString(),
-          request_keys: requestKeys,
-        };
-        checkpoint.pending_batches.push(pendingBatch);
-
-        yield* work(async () => {
-          await saveAnalyzeCheckpoint(CHECKPOINT_PATH, checkpoint);
+      for (const m of media) {
+        const cacheKey = urlHash(m.url);
+        targets.push({
+          url: m.url,
+          username,
+          tweetId: m.tweetId,
+          tweetText: m.tweetText,
+          cacheKey,
+          cachePath: join(IMAGE_CACHE_DIR, `${cacheKey}.png`),
         });
       }
     }
 
-    // ── Phase 3: Poll & Process ─────────────────────────────────────
-    let saved = 0;
-
-    while (checkpoint.pending_batches.length > 0) {
+    if (targets.length === 0) {
       yield* work(async ($) => {
-        $.description(
-          `Waiting for ${checkpoint.pending_batches.length} batch(es)… (polling every 30s)`,
-        );
-        await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+        $.description("No new images to classify.");
       });
+      return Ok(undefined);
+    }
 
-      const remaining: PendingBatch[] = [];
+    // Download all uncached images in parallel
+    const results = yield* work(async ($) => {
+      await mkdir(IMAGE_CACHE_DIR, { recursive: true });
+      $.description(`Downloading ${targets.length} images…`);
 
-      for (const batch of checkpoint.pending_batches) {
-        const status = yield* work(async ($) => {
-          $.description(`Polling ${batch.batch_name.slice(-12)}…`);
-          return getBatchStatus(batch.batch_name);
-        });
+      const downloadOne = async (t: DownloadTarget): Promise<boolean> => {
+        if (await fileExists(t.cachePath)) return true;
 
-        if (!isBatchDone(status)) {
-          remaining.push(batch);
-          continue;
-        }
+        const resp = await fetch(t.url);
 
-        if (status.state !== JobState.JOB_STATE_SUCCEEDED) {
-          yield* work(async ($) => {
-            $.description(
-              `Batch ${batch.batch_name.slice(-12)} failed (${status.state}), images will retry next run`,
-            );
-          });
-          continue;
-        }
-
-        const results = yield* work(async ($) => {
-          $.description(`Reading results for ${batch.batch_name.slice(-12)}…`);
-          return getBatchResults(batch.batch_name);
-        });
-
-        for (const [mediaUrl, classification] of results) {
-          checkpoint.classified_images.set(mediaUrl, classification);
-
-          if (!classification.is_booth_info || classification.confidence < CONFIDENCE_THRESHOLD) {
-            continue;
+        if (resp.status === 404 && twitter) {
+          try {
+            const tweetDetail = await twitter.enqueue((c) => c.tweet.details(t.tweetId));
+            const loaded = await loadUserRawTweets(RAW_TWEETS_DIR, t.username);
+            if (!tweetDetail) {
+              loaded.tweets.delete(t.tweetId);
+            } else {
+              loaded.tweets.set(t.tweetId, {
+                id: tweetDetail.id,
+                fullText: tweetDetail.fullText,
+                createdAt: tweetDetail.createdAt,
+                conversationId: tweetDetail.conversationId,
+                media: tweetDetail.media?.map((med) => ({ url: med.url })),
+                urls: tweetDetail.entities.urls,
+              });
+            }
+            await saveUserRawTweets(RAW_TWEETS_DIR, t.username, loaded.tweets);
+          } catch {
+            // Tweet detail fetch failed (deleted, suspended, etc.) — skip
           }
+          return false;
+        }
 
-          yield* work(async ($) => {
-            const cachePath = join(IMAGE_CACHE_DIR, `${urlHash(mediaUrl)}.png`);
+        if (!resp.ok) return false;
+
+        const arrayBuf = await resp.arrayBuffer();
+        try {
+          const pngBuf = await sharp(Buffer.from(arrayBuf)).png().toBuffer();
+          await writeFile(t.cachePath, pngBuf);
+        } catch {
+          return false;
+        }
+        return true;
+      };
+
+      return Promise.allSettled(targets.map((t) => downloadOne(t)));
+    });
+
+    for (let i = 0; i < targets.length; i++) {
+      const result = results[i]!;
+      if (result.status !== "fulfilled" || !result.value) continue;
+      const t = targets[i]!;
+      collected.push({
+        mediaUrl: t.url,
+        username: t.username,
+        tweetId: t.tweetId,
+        tweetText: t.tweetText,
+        cacheKey: t.cacheKey,
+      });
+    }
+
+    if (collected.length === 0) {
+      yield* work(async ($) => {
+        $.description("No images downloaded successfully.");
+      });
+      return Ok(undefined);
+    }
+
+    // ── Phase 2: Parallel direct requests with RPM gate ─────────────
+    const saved = yield* work(async ($) => {
+      $.description(
+        `Classifying ${collected.length} images (parallel=${GEMINI_CONCURRENCY}, rpm<=${GEMINI_RPM})…`,
+      );
+      $.progress({ kind: "count", value: 0 });
+
+      let nextIndex = 0;
+      let done = 0;
+      let saved = 0;
+      const rpmGate = createRpmGate(GEMINI_RPM);
+
+      const worker = async () => {
+        while (true) {
+          const index = nextIndex++;
+          if (index >= collected.length) return;
+
+          const img = collected[index]!;
+          const cachePath = join(IMAGE_CACHE_DIR, `${img.cacheKey}.png`);
+
+          let classification: { confidence: number; reason: string };
+          try {
             const pngBuf = await readFile(cachePath);
+            await rpmGate();
+            const req: ClassificationRequest = {
+              key: img.mediaUrl,
+              pngBase64: pngBuf.toString("base64"),
+              tweetText: img.tweetText,
+            };
+            classification = await classifyImage(req);
+
+            checkpoint.classified_images.set(img.mediaUrl, classification);
+
             const sha256 = createHash("sha256").update(pngBuf).digest("hex");
             const metadata = await sharp(pngBuf).metadata();
             const paths = boothInfoPaths(sha256);
-
-            $.description(`Saving ${sha256.slice(0, 12)}…`);
-            await mkdir(paths.dir, { recursive: true });
-
             const meta: BoothImageMeta = {
-              url: mediaUrl,
+              url: img.mediaUrl,
               width: metadata.width!,
               height: metadata.height!,
               sha256,
+              confidence: classification.confidence,
+              reason: classification.reason,
             };
-
+            await mkdir(paths.dir, { recursive: true });
             await Promise.all([
               writeFile(paths.png, pngBuf),
               writeFile(paths.meta, JSON.stringify(meta, undefined, 2), "utf8"),
             ]);
-
             saved++;
-          });
+          } catch (error) {
+            classification = {
+              confidence: 0,
+              reason: `Classification error: ${formatGeminiError(error)}`,
+            };
+            checkpoint.classified_images.set(img.mediaUrl, classification);
+          } finally {
+            done++;
+            $.progress({ kind: "count", value: done });
+          }
         }
-      }
+      };
 
-      checkpoint.pending_batches = remaining;
+      const workerCount = Math.min(GEMINI_CONCURRENCY, collected.length);
+      await Promise.all(Array.from({ length: workerCount }, () => worker()));
+      return saved;
+    });
 
-      yield* work(async () => {
-        await saveAnalyzeCheckpoint(CHECKPOINT_PATH, checkpoint);
-      });
-    }
-
-    // Mark all users as processed now that all batches are done
-    for (const { username, fetchedAt } of userFiles) {
-      checkpoint.users_processed.set(username, fetchedAt);
-    }
-
-    // Clean up image cache
+    // Save checkpoint and clean cache
     yield* work(async ($) => {
       $.description(`Done — ${saved} images saved. Cleaning up cache…`);
       try {

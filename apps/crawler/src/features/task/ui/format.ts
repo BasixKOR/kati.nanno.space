@@ -47,6 +47,9 @@ export function formatDuration(ms: number): string {
 
 export function formatProgress(progress: ProgressValue): string {
   if (progress === "indefinite") return "…";
-  if (progress.kind === "count") return `${progress.value}`;
+  if (progress.kind === "count")
+    return progress.total !== undefined
+      ? `${progress.value}/${progress.total}`
+      : `${progress.value}`;
   return `${Math.round(progress.value * 100)}%`;
 }

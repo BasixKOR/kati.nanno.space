@@ -97,6 +97,8 @@ export interface TimelineOptions {
   stopBeforeTweetId?: string;
   /** Stop paginating when tweets are older than this date */
   afterDate: Date;
+  /** Called after each page of tweets is fetched */
+  onPage?: (tweets: Tweet[]) => void | Promise<void>;
 }
 
 /** Fetch user timeline pages, stopping at checkpoint ID or date cutoff. */
@@ -105,7 +107,7 @@ export async function fetchUserTimeline(
   userId: string,
   options: TimelineOptions,
 ): Promise<Tweet[]> {
-  const { stopBeforeTweetId, afterDate } = options;
+  const { stopBeforeTweetId, afterDate, onPage } = options;
   const allTweets: Tweet[] = [];
   let cursor: string | undefined;
 
@@ -120,6 +122,7 @@ export async function fetchUserTimeline(
 
     if (data.list.length === 0) break;
 
+    const pageTweets: Tweet[] = [];
     let hitStop = false;
     for (const tweet of data.list) {
       if (stopBeforeTweetId && tweetIdLte(tweet.id, stopBeforeTweetId)) {
@@ -130,7 +133,12 @@ export async function fetchUserTimeline(
         hitStop = true;
         break;
       }
-      allTweets.push(tweet);
+      pageTweets.push(tweet);
+    }
+
+    allTweets.push(...pageTweets);
+    if (onPage && pageTweets.length > 0) {
+      await onPage(pageTweets);
     }
 
     if (hitStop) break;
@@ -147,6 +155,8 @@ export interface SearchOptions {
   startCursor?: string;
   /** Maximum number of pages to fetch (default: 50) */
   maxPages?: number;
+  /** Called after each page of tweets is fetched */
+  onPage?: (tweets: Tweet[]) => void | Promise<void>;
 }
 
 export interface SearchResult {
@@ -161,7 +171,7 @@ export async function fetchSearchResults(
   filter: ITweetFilter,
   options?: SearchOptions,
 ): Promise<SearchResult> {
-  const { stopBeforeTweetId, startCursor, maxPages = 50 } = options ?? {};
+  const { stopBeforeTweetId, startCursor, maxPages = 50, onPage } = options ?? {};
   const allTweets: Tweet[] = [];
   let cursor: string | undefined = startCursor;
 
@@ -181,13 +191,19 @@ export async function fetchSearchResults(
 
     if (data.list.length === 0) break;
 
+    const pageTweets: Tweet[] = [];
     let hitStop = false;
     for (const tweet of data.list) {
       if (stopBeforeTweetId && tweetIdLte(tweet.id, stopBeforeTweetId)) {
         hitStop = true;
         break;
       }
-      allTweets.push(tweet);
+      pageTweets.push(tweet);
+    }
+
+    allTweets.push(...pageTweets);
+    if (onPage && pageTweets.length > 0) {
+      await onPage(pageTweets);
     }
 
     if (hitStop) break;

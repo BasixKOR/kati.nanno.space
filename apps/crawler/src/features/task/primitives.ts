@@ -39,8 +39,14 @@ export function* spawn(tasks: readonly Task<unknown>[]): TaskGenerator<TaskResul
 export function* pool(
   tasks: readonly Task<unknown>[],
   concurrency: number,
+  options?: { description?: string },
 ): TaskGenerator<TaskResult<unknown>[]> {
-  const results = yield { kind: "pool", tasks, concurrency };
+  const results = yield {
+    kind: "pool" as const,
+    tasks,
+    concurrency,
+    ...(options?.description !== undefined ? { description: options.description } : {}),
+  };
   return results as TaskResult<unknown>[];
 }
 

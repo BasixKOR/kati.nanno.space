@@ -105,8 +105,25 @@ async function processInstruction(
       const childNames = instruction.tasks.map((t) => t.name);
       session.emit({ kind: "spawnStart", parent: currentTaskName, children: childNames });
 
+      const trackProgress = instruction.description !== undefined;
+      const total = instruction.tasks.length;
+      let completedCount = 0;
+
+      if (trackProgress) {
+        session.emit({
+          kind: "workStart",
+          task: currentTaskName,
+          description: instruction.description!,
+        });
+        session.emit({
+          kind: "workProgress",
+          task: currentTaskName,
+          value: { kind: "count", value: 0, total },
+        });
+      }
+
       const results: TaskResult<unknown>[] = Array.from<TaskResult<unknown>>({
-        length: instruction.tasks.length,
+        length: total,
       });
       let nextIndex = 0;
       const active = new Set<Promise<void>>();
@@ -118,6 +135,14 @@ async function processInstruction(
         const promise = executeTask(t, session, true).then((result) => {
           results[idx] = result;
           active.delete(promise);
+          if (trackProgress) {
+            completedCount++;
+            session.emit({
+              kind: "workProgress",
+              task: currentTaskName,
+              value: { kind: "count", value: completedCount, total },
+            });
+          }
         });
         active.add(promise);
       };
@@ -134,6 +159,9 @@ async function processInstruction(
         }
       }
 
+      if (trackProgress) {
+        session.emit({ kind: "workEnd", task: currentTaskName });
+      }
       session.emit({ kind: "spawnEnd", parent: currentTaskName });
       return results;
     }

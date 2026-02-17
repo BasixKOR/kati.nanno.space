@@ -2,7 +2,7 @@
 import { createHash } from "node:crypto";
 import { execFile as execFileCb } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { join, resolve } from "node:path";
 import { promisify } from "node:util";
 
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
@@ -397,7 +397,7 @@ function runValidationServer(hash: string, port = 3001): Promise<BoothProduct[]>
       const h = c.req.param("hash");
       const idx = Number(c.req.param("index"));
       const prefix = h.slice(0, 4);
-      const fp = resolve(dataDir, prefix, `${h}.jsonl`);
+      const fp = join(dataDir, prefix, `${h}.jsonl`);
 
       let products: BoothProduct[];
       try {
@@ -415,7 +415,7 @@ function runValidationServer(hash: string, port = 3001): Promise<BoothProduct[]>
       const h = c.req.param("hash");
       const idx = Number(c.req.param("index"));
       const prefix = h.slice(0, 4);
-      const fp = resolve(dataDir, prefix, `${h}.jsonl`);
+      const fp = join(dataDir, prefix, `${h}.jsonl`);
 
       let products: BoothProduct[];
       try {
