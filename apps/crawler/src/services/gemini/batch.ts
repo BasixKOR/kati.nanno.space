@@ -1,39 +1,36 @@
-import { GoogleGenAI, JobState } from "@google/genai";
-import type { BatchJob } from "@google/genai";
+import { GoogleGenAI } from "@google/genai";
 
-/** 18 MB — keeps base64 payload under Gemini batch request limit */
-const MAX_BATCH_BYTES = 18 * 1024 * 1024;
+const CLASSIFICATION_PROMPT = `You are a strict binary scorer for booth merchandise INFO SHEET images.
 
-const CLASSIFICATION_PROMPT = `You are classifying images from Korean subculture event Twitter accounts.
+Target: a single image intended for ordering, containing MULTIPLE items with readable item names and prices.
 
-Determine whether the image is a booth/merchandise INFO SHEET — a single image that lists multiple products with names and prices so customers know what to buy.
+Decision rules (strict):
+1) Start from confidence=0.0.
+2) To exceed 0.90, ALL must be true:
+   - Multiple distinct products are shown.
+   - Price text is visible for products (numbers/currency/원/¥/KRW etc.).
+   - The layout is informational (catalog/menu/price sheet), not decorative art.
+3) If ANY is missing (especially readable prices), cap confidence at 0.60.
+4) If image is mainly artwork/poster/photo/banner/announcement, confidence <= 0.20.
+5) If uncertain, lower confidence (favor false negatives over false positives).
 
-POSITIVE (is_booth_info = true) — must show ALL of:
-- Multiple product thumbnails or photos arranged in a grid/list
-- Product names and prices explicitly written
-- Designed as an informational reference (price list, catalog, menu)
+Common negatives (score low):
+- Standalone illustration or fanart
+- Single product close-up
+- Event poster, booth banner, logo, profile image
+- Crowd/selfie/venue photo
+- Schedule/info notice without product list+prices
+- QR/link-only preorder notice
 
-NEGATIVE (is_booth_info = false):
-- Fan art, illustrations, or standalone artwork (even by a booth seller)
-- A single product photo without a price list context
-- Logos, banners, profile images, or event posters
-- Personal photos, selfies, event venue shots
-- Memes, casual content, work-in-progress sketches
-- Tiny thumbnails or icons
-- Pre-order form screenshots (just a link/QR, not the product list itself)
-- Booth layout diagrams without product details
+Use tweet text only as weak context. Do NOT up-score based on text if the image itself lacks clear product+price evidence.
 
-Be strict. When in doubt, classify as negative. Only flag images that would let a customer see the full product lineup and prices at a glance.
-
-Return your classification with confidence (0-1) and a brief reason.`;
+Return only JSON:
+- confidence: float in [0,1]
+- reason: one short sentence mentioning observed evidence (or missing evidence).`;
 
 const CLASSIFICATION_JSON_SCHEMA = {
   type: "object",
   properties: {
-    is_booth_info: {
-      type: "boolean",
-      description: "Whether the image contains booth/merchandise information",
-    },
     confidence: {
       type: "number",
       description: "Confidence score between 0 and 1",
@@ -43,7 +40,7 @@ const CLASSIFICATION_JSON_SCHEMA = {
       description: "Brief explanation for the classification",
     },
   },
-  required: ["is_booth_info", "confidence", "reason"],
+  required: ["confidence", "reason"],
 };
 
 export interface ClassificationRequest {
@@ -56,7 +53,6 @@ export interface ClassificationRequest {
 }
 
 export interface ClassificationResult {
-  is_booth_info: boolean;
   confidence: number;
   reason: string;
 }
@@ -65,106 +61,85 @@ function createClient(): GoogleGenAI {
   return new GoogleGenAI({ apiKey: process.env.CRAWLER_AI_KEY_GEMINI! });
 }
 
-/** Split requests into chunks that each fit under the base64 payload limit. */
-export function chunkRequests(requests: ClassificationRequest[]): ClassificationRequest[][] {
-  const chunks: ClassificationRequest[][] = [];
-  let current: ClassificationRequest[] = [];
-  let currentSize = 0;
+const ANALYZE_INFO_MODEL = process.env.CRAWLER_GEMINI_ANALYZE_MODEL ?? "gemini-2.5-pro";
 
-  for (const req of requests) {
-    const size = req.pngBase64.length;
-    if (current.length > 0 && currentSize + size > MAX_BATCH_BYTES) {
-      chunks.push(current);
-      current = [];
-      currentSize = 0;
-    }
-    current.push(req);
-    currentSize += size;
-  }
-
-  if (current.length > 0) {
-    chunks.push(current);
-  }
-
-  return chunks;
-}
-
-/** Submit a batch of classification requests. Returns the batch resource name. */
-export async function createClassificationBatch(
-  requests: ClassificationRequest[],
-  displayName: string,
-): Promise<string> {
+/** Classify one image directly (non-batch request). */
+export async function classifyImage(request: ClassificationRequest): Promise<ClassificationResult> {
   const ai = createClient();
-
-  const inlinedRequests = requests.map((req) => ({
-    model: "gemini-2.5-flash",
+  const response = await ai.models.generateContent({
+    model: ANALYZE_INFO_MODEL,
     config: {
       systemInstruction: CLASSIFICATION_PROMPT,
       responseMimeType: "application/json",
       responseJsonSchema: CLASSIFICATION_JSON_SCHEMA,
-      temperature: 0.2,
-      thinkingConfig: { thinkingBudget: 0 },
+      temperature: 0,
+      thinkingConfig: { thinkingBudget: 128 },
     },
     contents: [
       {
-        role: "user" as const,
+        role: "user",
         parts: [
-          { inlineData: { mimeType: "image/png", data: req.pngBase64 } },
-          { text: `Tweet text: ${req.tweetText}` },
+          { inlineData: { mimeType: "image/png", data: request.pngBase64 } },
+          { text: `Tweet text: ${request.tweetText}` },
         ],
       },
     ],
-    metadata: { key: req.key },
-  }));
-
-  const batch = await ai.batches.create({
-    model: "gemini-2.5-flash",
-    src: inlinedRequests,
-    config: { displayName },
   });
 
-  return batch.name!;
-}
-
-/** Poll batch status. */
-export async function getBatchStatus(name: string): Promise<BatchJob> {
-  const ai = createClient();
-  return ai.batches.get({ name });
-}
-
-/** Returns true when the batch is in a terminal state. */
-export function isBatchDone(batch: BatchJob): boolean {
-  return (
-    batch.state === JobState.JOB_STATE_SUCCEEDED ||
-    batch.state === JobState.JOB_STATE_FAILED ||
-    batch.state === JobState.JOB_STATE_CANCELLED
-  );
-}
-
-/** Parse completed batch responses into a key→result map. */
-export async function getBatchResults(name: string): Promise<Map<string, ClassificationResult>> {
-  const ai = createClient();
-  const batch = await ai.batches.get({ name });
-  const results = new Map<string, ClassificationResult>();
-
-  const responses = batch.dest?.inlinedResponses;
-  if (!responses) return results;
-
-  for (const resp of responses) {
-    const key = resp.metadata?.key;
-    if (!key) continue;
-
-    try {
-      const text = resp.response?.candidates?.[0]?.content?.parts?.[0]?.text;
-      if (text) {
-        results.set(key, JSON.parse(text) as ClassificationResult);
-      }
-    } catch {
-      // Skip malformed responses — images remain unclassified for retry
-    }
+  const text = response.text;
+  if (!text) {
+    return { confidence: 0, reason: "Empty model response" };
   }
 
-  return results;
+  try {
+    const parsed = JSON.parse(text) as Record<string, unknown>;
+    const rawConfidence =
+      typeof parsed.confidence === "number"
+        ? parsed.confidence
+        : typeof parsed.booth_info_score === "number"
+          ? parsed.booth_info_score
+          : typeof parsed.is_booth_info === "boolean"
+            ? parsed.is_booth_info
+              ? 1
+              : 0
+            : null;
+    const confidence =
+      rawConfidence == undefined || Number.isNaN(rawConfidence)
+        ? 0
+        : Math.max(0, Math.min(1, rawConfidence));
+    const reason =
+      typeof parsed.reason === "string" && parsed.reason.trim().length > 0
+        ? parsed.reason
+        : "No reason returned by model";
+
+    return { confidence, reason };
+  } catch {
+    return { confidence: 0, reason: "Malformed model response" };
+  }
 }
 
-export { JobState };
+/** Format a Gemini API error into a readable string. */
+export function formatGeminiError(err: unknown): string {
+  if (!(err instanceof Error)) return String(err);
+
+  // APIError from @google/genai stores the JSON body in .error
+  const body = (err as unknown as Record<string, unknown>).error as
+    | Record<string, unknown>
+    | undefined;
+  const inner = (body?.error as Record<string, unknown> | undefined) ?? body;
+
+  if (!inner?.message) return err.message;
+
+  const details = inner.details as
+    | Array<{ reason?: string; metadata?: Record<string, string> }>
+    | undefined;
+  const parts: string[] = [];
+  if (inner.status) parts.push(String(inner.status));
+  parts.push(String(inner.message));
+  for (const d of details ?? []) {
+    if (d.reason) parts.push(d.reason);
+    const limit = d.metadata?.quota_limit;
+    if (limit) parts.push(`(${limit})`);
+  }
+  return parts.join(": ");
+}
