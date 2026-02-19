@@ -113,9 +113,17 @@ export function extractRelations(): Task<void> {
 
       const key = `${link.circle_id}\0${witchformId}`;
       const relation = relationMap.get(key);
-      if (!relation) continue;
-      relation.urls.add(link.link_url);
-      relation.tweet_ids.add(link.tweet_id);
+      if (relation) {
+        relation.urls.add(link.link_url);
+        relation.tweet_ids.add(link.tweet_id);
+      } else {
+        relationMap.set(key, {
+          circle_id: link.circle_id,
+          witchform_id: witchformId,
+          urls: new Set([link.link_url]),
+          tweet_ids: new Set([link.tweet_id]),
+        });
+      }
     }
 
     const grouped = new Map<number, BoothRelation[]>();
